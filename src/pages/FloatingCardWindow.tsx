@@ -1240,7 +1240,7 @@ export function FloatingCardWindow() {
             try {
               await qoderService.refreshQoderToken(viewedAccount.id, selectedPlatform);
             } finally {
-              await useQoderAccountStore.getState().fetchAccounts();
+              await useQoderAccountStore.getState().fetchAccounts({ silent: true });
             }
             break;
           case 'zcode':

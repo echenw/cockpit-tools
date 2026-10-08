@@ -30,6 +30,7 @@ import { openUrl } from '@tauri-apps/plugin-opener';
 import { useTranslation } from 'react-i18next';
 import { TagEditModal } from '../components/TagEditModal';
 import { QoderOfficialLoginSection } from '../components/QoderOfficialLoginSection';
+import { useActionBubble } from '../components/ActionBubble';
 import { ExportJsonModal } from '../components/ExportJsonModal';
 import { ModalErrorMessage, useModalErrorState } from '../components/ModalErrorMessage';
 import { MfaQuickCodeSelect } from '../components/MfaQuickCodeSelect';
@@ -336,6 +337,8 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
   const oauthCompletingLoginIdRef = useRef<string | null>(null);
   const oauthAttemptSeqRef = useRef(0);
   const handlePrepareOauthRef = useRef<(() => Promise<void>) | undefined>(undefined);
+  const { showBubble, renderBubble } = useActionBubble();
+  const exportAnchorRef = useRef<HTMLElement | null>(null);
   const [message, setMessage] = useState<{ text: string; tone?: 'error' } | null>(null);
   const [refreshing, setRefreshing] = useState<string | null>(null);
   const [refreshingAll, setRefreshingAll] = useState(false);
@@ -500,11 +503,7 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
       });
       return;
     }
-
-    setMessage({
-      text: String(store.error).replace(/^Error:\s*/, ''),
-      tone: 'error',
-    });
+    setMessage({ text: String(store.error).replace(/^Error:\s*/, ''), tone: 'error' });
   }, [store.error, t]);
 
   const toggleFilterTypeValue = useCallback((value: string) => {
@@ -529,11 +528,17 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
   const exportModal = useExportJsonModal({
     exportFilePrefix: 'qoder_accounts',
     exportJsonByIds: qoderService.exportQoderAccounts,
-    onError: (error) =>
-      setMessage({
-        tone: 'error',
-        text: t('accounts.exportError', '导出失败：{{error}}', { error: String(error) }),
-      }),
+    onError: (error) => {
+      const anchor =
+        (exportAnchorRef.current && document.contains(exportAnchorRef.current))
+          ? exportAnchorRef.current
+          : document.getElementById('qoder-btn-export-all');
+      showBubble(
+        anchor,
+        t('accounts.exportError', '导出失败：{{error}}', { error: String(error).replace(/^Error:\s*/, '') }),
+        'error',
+      );
+    },
   });
 
   const maskAccountText = useCallback(
@@ -917,69 +922,95 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
   }, []);
 
   const handleRefresh = useCallback(
-    async (accountId: string) => {
+    async (accountId: string, anchorEl?: HTMLElement | null) => {
       if (refreshing === accountId) return;
+      const anchor =
+        (anchorEl && document.contains(anchorEl))
+          ? anchorEl
+          : (document.getElementById(`qoder-btn-refresh-${accountId}`) ??
+             document.getElementById(`qoder-list-btn-refresh-${accountId}`));
       setRefreshing(accountId);
       try {
         try {
           await qoderService.refreshQoderToken(accountId, activeVariant);
         } finally {
-          await store.fetchAccounts();
+          await store.fetchAccounts({ silent: true });
         }
-        setMessage({ text: t('accounts.refreshSuccess', '刷新成功') });
+        showBubble(anchor, t('accounts.refreshSuccess', '刷新成功'), 'success');
       } catch (error) {
-        setMessage({
-          tone: 'error',
-          text: t('accounts.refreshFailed', '刷新失败：{{error}}', { error: String(error) }),
-        });
+        showBubble(
+          anchor,
+          t('accounts.refreshFailed', '刷新失败：{{error}}', {
+            error: String(error).replace(/^Error:\s*/, ''),
+          }),
+          'error',
+        );
       } finally {
         setRefreshing(null);
       }
     },
-    [activeVariant, refreshing, store, t],
+    [activeVariant, refreshing, showBubble, store, t],
   );
 
-  const handleRefreshAll = useCallback(async () => {
-    if (refreshingAll) return;
-    setRefreshingAll(true);
-    try {
+  const handleRefreshAll = useCallback(
+    async (anchorEl?: HTMLElement | null) => {
+      if (refreshingAll) return;
+      const anchor =
+        (anchorEl && document.contains(anchorEl))
+          ? anchorEl
+          : document.getElementById('qoder-btn-refresh-all');
+      setRefreshingAll(true);
       try {
-        await qoderService.refreshAllQoderTokens(activeVariant);
+        try {
+          await qoderService.refreshAllQoderTokens(activeVariant);
+        } finally {
+          await store.fetchAccounts();
+        }
+        showBubble(anchor, t('accounts.refreshAllSuccess', '已刷新全部账号'), 'success');
+      } catch (error) {
+        showBubble(
+          anchor,
+          t('accounts.refreshAllFailed', '批量刷新失败：{{error}}', {
+            error: String(error).replace(/^Error:\s*/, ''),
+          }),
+          'error',
+        );
       } finally {
-        await store.fetchAccounts();
+        setRefreshingAll(false);
       }
-      setMessage({ text: t('accounts.refreshAllSuccess', '已刷新全部账号') });
-    } catch (error) {
-      setMessage({
-        tone: 'error',
-        text: t('accounts.refreshAllFailed', '批量刷新失败：{{error}}', { error: String(error) }),
-      });
-    } finally {
-      setRefreshingAll(false);
-    }
-  }, [activeVariant, refreshingAll, store, t]);
+    },
+    [activeVariant, refreshingAll, showBubble, store, t],
+  );
 
   const handleSwitch = useCallback(
-    async (accountId: string) => {
+    async (accountId: string, anchorEl?: HTMLElement | null) => {
       if (injecting === accountId) return;
+      const anchor =
+        (anchorEl && document.contains(anchorEl))
+          ? anchorEl
+          : (document.getElementById(`qoder-btn-switch-${accountId}`) ??
+             document.getElementById(`qoder-list-btn-switch-${accountId}`));
       setInjecting(accountId);
       try {
         await store.switchAccount(accountId, activeVariant);
-        setMessage({ text: t('accounts.switchSuccess', '切换成功') });
+        showBubble(anchor, t('accounts.switchSuccess', '切换成功'), 'success');
       } catch (error) {
-        setMessage({
-          tone: 'error',
-          text: t('accounts.switchFailed', '切换失败：{{error}}', { error: String(error) }),
-        });
+        showBubble(
+          anchor,
+          t('accounts.switchFailed', '切换失败：{{error}}', {
+            error: String(error).replace(/^Error:\s*/, ''),
+          }),
+          'error',
+        );
       } finally {
         setInjecting(null);
       }
     },
-    [activeVariant, injecting, store, t],
+    [activeVariant, injecting, showBubble, store, t],
   );
 
   const handleDeleteAccounts = useCallback(
-    async (ids: string[]) => {
+    async (ids: string[], anchorEl?: HTMLElement | null) => {
       if (ids.length === 0 || deleting) return;
       const confirmed = await confirmDialog(
         ids.length === 1
@@ -998,31 +1029,48 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
       try {
         await store.deleteAccounts(ids);
         setSelected(new Set());
-        setMessage({ text: t('accounts.deleteSuccess', '删除成功') });
       } catch (error) {
-        setMessage({
-          tone: 'error',
-          text: t('accounts.deleteFailed', '删除失败：{{error}}', { error: String(error) }),
-        });
+        const anchor =
+          (anchorEl && document.contains(anchorEl))
+            ? anchorEl
+            : (ids.length === 1
+                ? (document.getElementById(`qoder-btn-delete-${ids[0]}`) ??
+                   document.getElementById(`qoder-list-btn-delete-${ids[0]}`))
+                : document.getElementById('qoder-btn-batch-delete'));
+        showBubble(
+          anchor,
+          t('accounts.deleteFailed', '删除失败：{{error}}', {
+            error: String(error).replace(/^Error:\s*/, ''),
+          }),
+          'error',
+        );
       } finally {
         setDeleting(false);
       }
     },
-    [deleting, store, t],
+    [deleting, showBubble, store, t],
   );
 
   const handleSaveTags = useCallback(
     async (accountId: string, tags: string[]) => {
       const scrollY = window.scrollY;
-      await store.updateAccountTags(accountId, tags);
-      setMessage({ text: t('accounts.tagUpdated', '标签已更新') });
+      const anchor =
+        document.getElementById(`qoder-btn-tag-${accountId}`) ??
+        document.getElementById(`qoder-list-btn-tag-${accountId}`);
+      try {
+        await store.updateAccountTags(accountId, tags);
+        showBubble(anchor, t('accounts.tagUpdated', '标签已更新'), 'success');
+      } catch (error) {
+        showBubble(anchor, String(error).replace(/^Error:\s*/, ''), 'error');
+        throw error;
+      }
       window.requestAnimationFrame(() => {
         window.requestAnimationFrame(() => {
           window.scrollTo({ top: scrollY, behavior: 'auto' });
         });
       });
     },
-    [store, t],
+    [showBubble, store, t],
   );
 
   const toggleTagFilterValue = useCallback((tag: string) => {
@@ -1481,19 +1529,28 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
   );
 
   const handleExportByIds = useCallback(
-    async (ids: string[], fileNameBase?: string) => {
+    async (ids: string[], fileNameBase?: string, anchorEl?: HTMLElement | null) => {
       if (ids.length === 0) return;
+      if (anchorEl) {
+        exportAnchorRef.current = anchorEl;
+      }
       await exportModal.startExport(ids, fileNameBase);
     },
     [exportModal],
   );
 
-  const handleExportSelected = useCallback(async () => {
-    const visibleIdSet = new Set(filteredIds);
-    const selectedVisibleIds = Array.from(selected).filter((id) => visibleIdSet.has(id));
-    const ids = selectedVisibleIds.length > 0 ? selectedVisibleIds : filteredIds;
-    await handleExportByIds(ids, 'qoder_accounts');
-  }, [filteredIds, handleExportByIds, selected]);
+  const handleExportSelected = useCallback(
+    async (anchorEl?: HTMLElement | null) => {
+      if (anchorEl) {
+        exportAnchorRef.current = anchorEl;
+      }
+      const visibleIdSet = new Set(filteredIds);
+      const selectedVisibleIds = Array.from(selected).filter((id) => visibleIdSet.has(id));
+      const ids = selectedVisibleIds.length > 0 ? selectedVisibleIds : filteredIds;
+      await handleExportByIds(ids, 'qoder_accounts', anchorEl);
+    },
+    [filteredIds, handleExportByIds, selected],
+  );
 
   const formatRelativeDuration = useCallback(
     (seconds: number) => {
@@ -1727,14 +1784,16 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
               </span>
               <div className="card-actions">
                 <button
+                  id={`qoder-btn-switch-${account.id}`}
                   className="card-action-btn success"
-                  onClick={() => void handleSwitch(account.id)}
+                  onClick={(e) => void handleSwitch(account.id, e.currentTarget)}
                   title={t('dashboard.switch', '切换')}
                   disabled={isInjecting || deleting}
                 >
                   {isInjecting ? <RotateCw size={14} className="loading-spinner" /> : <Play size={14} />}
                 </button>
                 <button
+                  id={`qoder-btn-tag-${account.id}`}
                   className="card-action-btn"
                   onClick={() => setShowTagModal(account.id)}
                   title={t('accounts.tagButton', '编辑标签')}
@@ -1743,24 +1802,27 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
                   <Tag size={14} />
                 </button>
                 <button
+                  id={`qoder-btn-refresh-${account.id}`}
                   className="card-action-btn"
-                  onClick={() => void handleRefresh(account.id)}
+                  onClick={(e) => void handleRefresh(account.id, e.currentTarget)}
                   title={t('common.refresh', '刷新')}
                   disabled={isRefreshing || isInjecting || deleting}
                 >
                   <RefreshCw size={14} className={isRefreshing ? 'loading-spinner' : ''} />
                 </button>
                 <button
+                  id={`qoder-btn-export-${account.id}`}
                   className="card-action-btn export-btn"
-                  onClick={() => void handleExportByIds([account.id], getQoderAccountDisplayEmail(account))}
+                  onClick={(e) => void handleExportByIds([account.id], getQoderAccountDisplayEmail(account), e.currentTarget)}
                   title={t('accounts.actions.export', '导出')}
                   disabled={exportModal.preparing || exportModal.saving}
                 >
                   <Download size={14} />
                 </button>
                 <button
+                  id={`qoder-btn-delete-${account.id}`}
                   className="card-action-btn danger"
-                  onClick={() => void handleDeleteAccounts([account.id])}
+                  onClick={(e) => void handleDeleteAccounts([account.id], e.currentTarget)}
                   title={t('accounts.actions.delete', '删除')}
                   disabled={deleting}
                 >
@@ -1865,22 +1927,25 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
             <td>
               <div className="action-buttons">
                 <button
+                  id={`qoder-list-btn-refresh-${account.id}`}
                   className="action-btn"
-                  onClick={() => void handleRefresh(account.id)}
+                  onClick={(e) => void handleRefresh(account.id, e.currentTarget)}
                   title={t('common.refresh', '刷新')}
                   disabled={isRefreshing || isInjecting || deleting}
                 >
                   <RefreshCw size={14} className={isRefreshing ? 'loading-spinner' : ''} />
                 </button>
                 <button
+                  id={`qoder-list-btn-switch-${account.id}`}
                   className="action-btn"
-                  onClick={() => void handleSwitch(account.id)}
+                  onClick={(e) => void handleSwitch(account.id, e.currentTarget)}
                   title={t('dashboard.switch', '切换')}
                   disabled={isInjecting || deleting}
                 >
                   {isInjecting ? <RotateCw size={14} className="loading-spinner" /> : <Play size={14} />}
                 </button>
                 <button
+                  id={`qoder-list-btn-tag-${account.id}`}
                   className="action-btn"
                   onClick={() => setShowTagModal(account.id)}
                   title={t('accounts.tagButton', '编辑标签')}
@@ -1889,16 +1954,18 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
                   <Tag size={14} />
                 </button>
                 <button
+                  id={`qoder-list-btn-export-${account.id}`}
                   className="action-btn"
-                  onClick={() => void handleExportByIds([account.id], getQoderAccountDisplayEmail(account))}
+                  onClick={(e) => void handleExportByIds([account.id], getQoderAccountDisplayEmail(account), e.currentTarget)}
                   title={t('accounts.actions.export', '导出')}
                   disabled={exportModal.preparing || exportModal.saving}
                 >
                   <Upload size={14} />
                 </button>
                 <button
+                  id={`qoder-list-btn-delete-${account.id}`}
                   className="action-btn danger"
-                  onClick={() => void handleDeleteAccounts([account.id])}
+                  onClick={(e) => void handleDeleteAccounts([account.id], e.currentTarget)}
                   title={t('accounts.actions.delete', '删除')}
                   disabled={deleting}
                 >
@@ -2215,8 +2282,9 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
                 <Plus size={14} />
               </button>
               <button
+                id="qoder-btn-refresh-all"
                 className="btn btn-secondary icon-only"
-                onClick={() => void handleRefreshAll()}
+                onClick={(e) => void handleRefreshAll(e.currentTarget)}
                 disabled={refreshingAll || accounts.length === 0}
                 title={t('accounts.actions.refreshAll', '刷新全部')}
               >
@@ -2241,8 +2309,9 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
                 <Download size={14} />
               </button>
               <button
+                id="qoder-btn-export-all"
                 className="btn btn-secondary export-btn icon-only"
-                onClick={() => void handleExportSelected()}
+                onClick={(e) => void handleExportSelected(e.currentTarget)}
                 disabled={exportModal.preparing || exportModal.saving || filteredAccounts.length === 0}
                 title={
                   visibleSelectedCount > 0
@@ -2268,8 +2337,9 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
               selectedIds={Array.from(selected)}
               actions={(
                 <button
+                  id="qoder-btn-batch-delete"
                   className="btn btn-danger icon-only"
-                  onClick={() => void handleDeleteAccounts(Array.from(selected))}
+                  onClick={(e) => void handleDeleteAccounts(Array.from(selected), e.currentTarget)}
                   disabled={deleting}
                   title={`${t('common.delete', '删除')} (${selected.size})`}
                   aria-label={`${t('common.delete', '删除')} (${selected.size})`}
@@ -2565,6 +2635,8 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
         onOpenSavedDirectory={exportModal.openSavedDirectory}
         onCopySavedPath={exportModal.copySavedPath}
       />
+
+      {renderBubble()}
     </div>
   );
 }

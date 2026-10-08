@@ -1346,7 +1346,7 @@ export function DashboardPage({
       try {
         await qoderService.refreshQoderToken(accountId, variant);
       } finally {
-        await fetchQoderAccounts();
+        await fetchQoderAccounts({ silent: true });
       }
     } catch (error) {
       console.error('Refresh failed:', error);
