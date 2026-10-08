@@ -16,6 +16,9 @@ const TRAY_MIGRATED_PLATFORM_IDS: PlatformId[] = [
   'codebuddy',
   'codebuddy_cn',
   'qoder',
+  'qoder_app',
+  'qoder_cn_ide',
+  'qoder_cn_app',
   'zcode',
   'trae',
   'trae_solo',
@@ -26,8 +29,11 @@ const TRAY_MIGRATED_PLATFORM_IDS: PlatformId[] = [
 const DEFAULT_CODEBUDDY_GROUP_ID = 'codebuddy-suite';
 const DEFAULT_ANTIGRAVITY_GROUP_ID = 'antigravity-suite';
 const DEFAULT_TRAE_GROUP_ID = 'trae-suite';
+const DEFAULT_QODER_GROUP_ID = 'qoder-suite';
 const DEFAULT_CODEX_GROUP_ID = 'codex-suite';
 const TRAE_SUITE_PLATFORM_IDS: PlatformId[] = ['trae', 'trae_solo', 'trae_cn', 'trae_solo_cn'];
+// 成员显示名与变体显示名一致（qoder = Qoder IDE，qoder_app = Qoder）。
+const QODER_SUITE_PLATFORM_IDS: PlatformId[] = ['qoder', 'qoder_app', 'qoder_cn_ide', 'qoder_cn_app'];
 const CODEX_SUITE_PLATFORM_IDS: PlatformId[] = ['codex', 'codex_api_service'];
 
 const PLATFORM_ENTRY_PREFIX = 'platform:';
@@ -69,6 +75,7 @@ type PersistedPlatformLayout = {
   sidebarEntryIds?: PlatformLayoutEntryId[];
   antigravityGroupFirstMigrated?: boolean;
   traeSuiteDefaultGroupRestored?: boolean;
+  qoderSuiteDefaultGroupRestored?: boolean;
   codexApiServiceSuiteMigrated?: boolean;
   apiRelaySidebarVisible?: boolean;
   apiRelayDashboardVisible?: boolean;
@@ -88,6 +95,7 @@ interface PlatformLayoutState {
   sidebarEntryIds: PlatformLayoutEntryId[];
   antigravityGroupFirstMigrated: boolean;
   traeSuiteDefaultGroupRestored: boolean;
+  qoderSuiteDefaultGroupRestored: boolean;
   codexApiServiceSuiteMigrated: boolean;
   apiRelaySidebarVisible: boolean;
   apiRelayDashboardVisible: boolean;
@@ -132,6 +140,7 @@ interface NormalizedLayoutStateData {
   sidebarEntryIds: PlatformLayoutEntryId[];
   antigravityGroupFirstMigrated: boolean;
   traeSuiteDefaultGroupRestored: boolean;
+  qoderSuiteDefaultGroupRestored: boolean;
   codexApiServiceSuiteMigrated: boolean;
   apiRelaySidebarVisible: boolean;
   apiRelayDashboardVisible: boolean;
@@ -287,6 +296,23 @@ function createDefaultTraeSuiteGroup(): PlatformLayoutGroup {
   };
 }
 
+function createDefaultQoderSuiteGroup(): PlatformLayoutGroup {
+  return {
+    id: DEFAULT_QODER_GROUP_ID,
+    name: 'Qoder',
+    platformIds: QODER_SUITE_PLATFORM_IDS,
+    defaultPlatformId: 'qoder',
+    iconKind: 'platform',
+    iconPlatformId: 'qoder',
+    childConfigs: [
+      { platformId: 'qoder', name: 'Qoder IDE' },
+      { platformId: 'qoder_app', name: 'Qoder' },
+          { platformId: 'qoder_cn_ide', name: 'Qoder CN IDE' },
+      { platformId: 'qoder_cn_app', name: 'Qoder CN' },
+    ],
+  };
+}
+
 function createDefaultCodexSuiteGroup(): PlatformLayoutGroup {
   return {
     id: DEFAULT_CODEX_GROUP_ID,
@@ -322,6 +348,7 @@ function defaultPlatformGroups(): PlatformLayoutGroup[] {
       iconPlatformId: 'codebuddy',
     },
     createDefaultTraeSuiteGroup(),
+    createDefaultQoderSuiteGroup(),
   ];
 }
 
@@ -451,7 +478,16 @@ function normalizeGroupName(raw: unknown, fallbackPlatform: PlatformId): string 
     return 'WorkBuddy';
   }
   if (fallbackPlatform === 'qoder') {
+    return 'Qoder IDE';
+  }
+  if (fallbackPlatform === 'qoder_app') {
     return 'Qoder';
+  }
+  if (fallbackPlatform === 'qoder_cn_ide') {
+    return 'Qoder CN IDE';
+  }
+  if (fallbackPlatform === 'qoder_cn_app') {
+    return 'Qoder CN';
   }
   if (fallbackPlatform === 'zcode') {
     return 'ZCode';
@@ -515,6 +551,39 @@ function restoreDefaultTraeSuiteGroup(groups: PlatformLayoutGroup[]): PlatformLa
   const insertIndex = Math.min(...singletonIndexes);
   const next = groups.filter((_, index) => !singletonIndexSet.has(index));
   next.splice(insertIndex, 0, createDefaultTraeSuiteGroup());
+  return next;
+}
+
+function isDefaultQoderSuiteSingletonGroup(group: PlatformLayoutGroup): boolean {
+  const platformId = group.platformIds[0];
+  return (
+    group.platformIds.length === 1
+    && QODER_SUITE_PLATFORM_IDS.includes(platformId)
+    && group.id === `platform-${platformId}`
+    && group.name === normalizeGroupName(undefined, platformId)
+    && group.defaultPlatformId === platformId
+    && group.iconKind === 'platform'
+    && group.iconPlatformId === platformId
+    && (group.childConfigs ?? []).length === 0
+  );
+}
+
+function restoreDefaultQoderSuiteGroup(groups: PlatformLayoutGroup[]): PlatformLayoutGroup[] {
+  const singletonIndexes = QODER_SUITE_PLATFORM_IDS.map((platformId) =>
+    groups.findIndex((group) =>
+      group.platformIds.length === 1
+      && group.platformIds[0] === platformId
+      && isDefaultQoderSuiteSingletonGroup(group)
+    )
+  );
+  if (singletonIndexes.some((index) => index < 0)) {
+    return groups;
+  }
+
+  const singletonIndexSet = new Set(singletonIndexes);
+  const insertIndex = Math.min(...singletonIndexes);
+  const next = groups.filter((_, index) => !singletonIndexSet.has(index));
+  next.splice(insertIndex, 0, createDefaultQoderSuiteGroup());
   return next;
 }
 
@@ -591,10 +660,12 @@ function normalizePlatformGroups(
   fallbackToDefault: boolean,
   options: {
     restoreDefaultTraeSuiteGroup?: boolean;
+    restoreDefaultQoderSuiteGroup?: boolean;
     attachCodexApiServiceToCodexGroup?: boolean;
   } = {},
 ): PlatformLayoutGroup[] {
   const shouldRestoreDefaultTraeSuiteGroup = options.restoreDefaultTraeSuiteGroup === true;
+  const shouldRestoreDefaultQoderSuiteGroup = options.restoreDefaultQoderSuiteGroup === true;
   const shouldAttachCodexApiService = options.attachCodexApiServiceToCodexGroup === true;
   const source = Array.isArray(raw) ? raw : (fallbackToDefault ? defaultPlatformGroups() : []);
   const result: PlatformLayoutGroup[] = [];
@@ -725,6 +796,42 @@ function normalizePlatformGroups(
         traeGroup.platformIds,
       );
       missingTraeSuiteIds.forEach((platformId) => usedPlatformIds.add(platformId));
+    }
+  }
+
+  if (shouldRestoreDefaultQoderSuiteGroup) {
+    const restoredQoderSuiteGroups = restoreDefaultQoderSuiteGroup(result);
+    if (restoredQoderSuiteGroups !== result) {
+      result.splice(0, result.length, ...restoredQoderSuiteGroups);
+    }
+  }
+
+  const missingQoderSuiteIds = QODER_SUITE_PLATFORM_IDS.filter(
+    (platformId) => !usedPlatformIds.has(platformId),
+  );
+  if (shouldRestoreDefaultQoderSuiteGroup && missingQoderSuiteIds.length > 0) {
+    const qoderGroup =
+      result.find((group) => group.id === DEFAULT_QODER_GROUP_ID)
+      ?? result.find((group) => group.platformIds.includes('qoder'));
+    if (qoderGroup) {
+      qoderGroup.platformIds = [...qoderGroup.platformIds, ...missingQoderSuiteIds];
+      if (!QODER_SUITE_PLATFORM_IDS.includes(qoderGroup.defaultPlatformId)) {
+        qoderGroup.defaultPlatformId = 'qoder';
+      }
+      if (qoderGroup.iconKind !== 'custom') {
+        qoderGroup.iconPlatformId = 'qoder';
+      }
+      qoderGroup.childConfigs = normalizeGroupChildConfigs(
+        [
+          ...(qoderGroup.childConfigs ?? []),
+          { platformId: 'qoder', name: 'Qoder IDE' },
+          { platformId: 'qoder_app', name: 'Qoder' },
+      { platformId: 'qoder_cn_ide', name: 'Qoder CN IDE' },
+          { platformId: 'qoder_cn_app', name: 'Qoder CN' },
+        ],
+        qoderGroup.platformIds,
+      );
+      missingQoderSuiteIds.forEach((platformId) => usedPlatformIds.add(platformId));
     }
   }
 
@@ -1156,6 +1263,7 @@ function normalizeStateData(
     sidebarEntryIds: PlatformLayoutEntryId[];
     antigravityGroupFirstMigrated?: boolean;
     traeSuiteDefaultGroupRestored?: boolean;
+    qoderSuiteDefaultGroupRestored?: boolean;
     codexApiServiceSuiteMigrated?: boolean;
     apiRelaySidebarVisible?: boolean;
     apiRelayDashboardVisible?: boolean;
@@ -1215,6 +1323,7 @@ function normalizeStateData(
     antigravityGroupFirstMigrated:
       raw.antigravityGroupFirstMigrated !== false || options.promoteAntigravityGroupEntry === true,
     traeSuiteDefaultGroupRestored: raw.traeSuiteDefaultGroupRestored !== false,
+    qoderSuiteDefaultGroupRestored: raw.qoderSuiteDefaultGroupRestored !== false,
     codexApiServiceSuiteMigrated: raw.codexApiServiceSuiteMigrated !== false,
     apiRelaySidebarVisible: raw.apiRelaySidebarVisible !== false,
     apiRelayDashboardVisible: raw.apiRelayDashboardVisible !== false,
@@ -1240,6 +1349,7 @@ function loadPersistedState(): NormalizedLayoutStateData {
         sidebarEntryIds: defaultSidebarEntryIds(defaultGroups),
         antigravityGroupFirstMigrated: true,
         traeSuiteDefaultGroupRestored: true,
+        qoderSuiteDefaultGroupRestored: true,
         codexApiServiceSuiteMigrated: true,
         apiRelaySidebarVisible: true,
         apiRelayDashboardVisible: true,
@@ -1251,6 +1361,7 @@ function loadPersistedState(): NormalizedLayoutStateData {
     const parsed = JSON.parse(raw) as PersistedPlatformLayout;
     const antigravityGroupFirstMigrated = parsed.antigravityGroupFirstMigrated === true;
     const traeSuiteDefaultGroupRestored = parsed.traeSuiteDefaultGroupRestored === true;
+    const qoderSuiteDefaultGroupRestored = parsed.qoderSuiteDefaultGroupRestored === true;
     const codexApiServiceSuiteMigrated = parsed.codexApiServiceSuiteMigrated === true;
     const orderedPlatformIds = normalizeOrder(parsed.orderedPlatformIds ?? defaultPlatformOrder());
     const hiddenPlatformIds = normalizeHidden(parsed.hiddenPlatformIds ?? []);
@@ -1264,6 +1375,7 @@ function loadPersistedState(): NormalizedLayoutStateData {
       parsed.platformGroups === undefined,
       {
         restoreDefaultTraeSuiteGroup: !traeSuiteDefaultGroupRestored,
+        restoreDefaultQoderSuiteGroup: !qoderSuiteDefaultGroupRestored,
         attachCodexApiServiceToCodexGroup: !codexApiServiceSuiteMigrated,
       },
     ).map((group) => sortGroupPlatformsByOrder(group, orderedPlatformIds));
@@ -1299,6 +1411,7 @@ function loadPersistedState(): NormalizedLayoutStateData {
       sidebarEntryIds,
       antigravityGroupFirstMigrated,
       traeSuiteDefaultGroupRestored: true,
+      qoderSuiteDefaultGroupRestored: true,
       codexApiServiceSuiteMigrated: true,
       apiRelaySidebarVisible: parsed.apiRelaySidebarVisible,
       apiRelayDashboardVisible: parsed.apiRelayDashboardVisible,
@@ -1324,6 +1437,7 @@ function loadPersistedState(): NormalizedLayoutStateData {
       sidebarEntryIds: defaultSidebarEntryIds(defaultGroups),
       antigravityGroupFirstMigrated: true,
       traeSuiteDefaultGroupRestored: true,
+      qoderSuiteDefaultGroupRestored: true,
       codexApiServiceSuiteMigrated: true,
       apiRelaySidebarVisible: true,
       apiRelayDashboardVisible: true,
@@ -1346,6 +1460,7 @@ function persist(
     | 'sidebarEntryIds'
     | 'antigravityGroupFirstMigrated'
     | 'traeSuiteDefaultGroupRestored'
+    | 'qoderSuiteDefaultGroupRestored'
     | 'codexApiServiceSuiteMigrated'
     | 'apiRelaySidebarVisible'
     | 'apiRelayDashboardVisible'
@@ -1862,6 +1977,7 @@ export const usePlatformLayoutStore = create<PlatformLayoutState>((set, get) => 
       sidebarEntryIds: defaultSidebarEntryIds(defaults),
       antigravityGroupFirstMigrated: true,
       traeSuiteDefaultGroupRestored: true,
+      qoderSuiteDefaultGroupRestored: true,
       codexApiServiceSuiteMigrated: true,
       apiRelaySidebarVisible: true,
       apiRelayDashboardVisible: true,

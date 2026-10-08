@@ -9,6 +9,7 @@ interface ExportJsonModalProps {
   title: string;
   jsonContent: string;
   customContent?: ReactNode;
+  notice?: ReactNode;
   errorMessage?: string | null;
   errorScrollKey?: string | number;
   hidden: boolean;
@@ -72,6 +73,7 @@ export function ExportJsonModal(props: ExportJsonModalProps) {
     title,
     jsonContent,
     customContent,
+    notice,
     errorMessage,
     errorScrollKey,
     hidden,
@@ -118,6 +120,7 @@ export function ExportJsonModal(props: ExportJsonModalProps) {
             customContent
           ) : (
             <>
+              {notice ? <div className="export-json-sensitive-notice">{notice}</div> : null}
               <div className="export-json-actions">
                 <button className="btn btn-secondary btn-sm" onClick={onToggleHidden}>
                   {hidden ? <Eye size={14} /> : <EyeOff size={14} />}

@@ -199,6 +199,7 @@ interface InstancesManagerProps<TAccount extends AccountLike> {
     | "codebuddy"
     | "codebuddy_cn"
     | "qoder"
+    | "qoder_cn_ide"
     | "trae"
     | "trae_solo"
     | "trae_cn"
@@ -1745,6 +1746,7 @@ export function InstancesManager<TAccount extends AccountLike>({
       rawApp === "codebuddy" ||
       rawApp === "codebuddy_cn" ||
       rawApp === "qoder" ||
+      rawApp === "qoder_cn_ide" ||
       rawApp === "zcode"
         ? rawApp
         : appType;

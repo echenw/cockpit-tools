@@ -14,7 +14,7 @@ import { useGrokAccountStore } from '../stores/useGrokAccountStore';
 import { useCodebuddyAccountStore } from '../stores/useCodebuddyAccountStore';
 import { useCodebuddyCnAccountStore } from '../stores/useCodebuddyCnAccountStore';
 import { useWorkbuddyAccountStore } from '../stores/useWorkbuddyAccountStore';
-import { useQoderAccountStore } from '../stores/useQoderAccountStore';
+import { refreshAllQoderVariants, useQoderAccountStore } from '../stores/useQoderAccountStore';
 import { useZcodeAccountStore } from '../stores/useZcodeAccountStore';
 import { useTraeAccountStore } from '../stores/useTraeAccountStore';
 import { useZedAccountStore } from '../stores/useZedAccountStore';
@@ -33,6 +33,8 @@ import {
   getTraeAccountPlatformId,
 } from '../types/trae';
 import { getZedAccountDisplayEmail } from '../types/zed';
+import { getProviderCurrentAccountId } from '../services/providerCurrentAccountService';
+import { QODER_VARIANT_IDS } from '../types/qoder';
 import * as traeService from '../services/traeService';
 import {
   loadCurrentAccountRefreshMinutesMap,
@@ -245,9 +247,6 @@ export function useAutoRefresh() {
   const refreshAllWorkbuddyTokens = useWorkbuddyAccountStore((state) => state.refreshAllTokens);
   const fetchCurrentWorkbuddyAccountId = useWorkbuddyAccountStore((state) => state.fetchCurrentAccountId);
   const refreshWorkbuddyToken = useWorkbuddyAccountStore((state) => state.refreshToken);
-  const refreshAllQoderTokens = useQoderAccountStore((state) => state.refreshAllTokens);
-  const fetchCurrentQoderAccountId = useQoderAccountStore((state) => state.fetchCurrentAccountId);
-  const refreshQoderToken = useQoderAccountStore((state) => state.refreshToken);
   const refreshAllZcodeTokens = useZcodeAccountStore((state) => state.refreshAllTokens);
   const fetchCurrentZcodeAccountId = useZcodeAccountStore((state) => state.fetchCurrentAccountId);
   const refreshZcodeToken = useZcodeAccountStore((state) => state.refreshToken);
@@ -670,10 +669,22 @@ export function useAutoRefresh() {
               fullRefreshingRef: qoderRefreshingRef,
               currentRefreshingRef: qoderCurrentRefreshingRef,
               runFullRefresh: async () => {
-                await refreshAllQoderTokens();
+                await refreshAllQoderVariants();
               },
               runCurrentRefresh: async () => {
-                await runProviderCurrentRefresh(fetchCurrentQoderAccountId, refreshQoderToken);
+                const results = await Promise.allSettled(
+                  QODER_VARIANT_IDS.map((variant) =>
+                    runProviderCurrentRefresh(
+                      () => getProviderCurrentAccountId(variant),
+                      (accountId) => useQoderAccountStore.getState().refreshToken(accountId, variant),
+                    ),
+                  ),
+                );
+                results.forEach((result, index) => {
+                  if (result.status === 'rejected') {
+                    console.warn(`[AutoRefresh] Qoder ${QODER_VARIANT_IDS[index]} 当前账号刷新失败:`, result.reason);
+                  }
+                });
               },
             },
             {
@@ -900,7 +911,6 @@ export function useAutoRefresh() {
     fetchCurrentGrokAccountId,
     fetchCurrentGhcpAccountId,
     fetchCurrentKiroAccountId,
-    fetchCurrentQoderAccountId,
     fetchCurrentZcodeAccountId,
     fetchTraeAccounts,
     fetchCurrentWindsurfAccountId,
@@ -915,7 +925,6 @@ export function useAutoRefresh() {
     refreshAllGhcpTokens,
     refreshAllKiroTokens,
     refreshAllQuotas,
-    refreshAllQoderTokens,
     refreshAllZcodeTokens,
     refreshAllWindsurfTokens,
     refreshAllWorkbuddyTokens,
@@ -927,7 +936,6 @@ export function useAutoRefresh() {
     refreshGrokToken,
     refreshGhcpToken,
     refreshKiroToken,
-    refreshQoderToken,
     refreshZcodeToken,
     refreshTraeToken,
     refreshWindsurfToken,

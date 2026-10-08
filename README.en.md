@@ -223,14 +223,16 @@ Manage CodeBuddy CN instances with isolated profiles and lifecycle controls.
 
 ### 11. Qoder Account Management
 
+- **Regional Accounts**: all four client entries and icons remain. App and IDE share accounts within the same region; authorizing or importing either makes the account appear in both lists. International and CN accounts stay separate. Each regional account owns one encrypted device RT, with separate client AT/job credentials and current-account selections. Deleting an account removes it from both same-region lists. Legacy records are merged by region and official user ID, with encrypted backups under `qoder-regional-backups/<migration-id>/` and old IDs retained for existing references. Migration and replay have been tested using isolated fictional accounts; real-account migration and native client flows have not been run.
 - **Account Import**: supports local import and JSON import
+- **Official Client Login**: IDE variants use a temporary blank instance, import its credentials, then close and clean it without changing the default instance's current account. App variants first close the client, save its previous account's final credentials in Cockpit, and retain an encrypted backup in the original directory. The active sign-in is then cleared and the official App opens its sign-in screen. The user clicks Sign in inside the App, which generates the authorization URL; Cockpit only imports the credentials saved by the App. The App add-account dialog offers both official-client sign-in and OAuth authorization, with official-client sign-in selected by default. After official-client sign-in completes and the account list refreshes successfully, the dialog closes after one second; errors or cleanup warnings keep it open. Cancel stops waiting without restoring the previous sign-in; switch back to the saved account from the account list to restore it. Failure to close the client, read credentials, or create the backup aborts before clearing unverified credentials. The user has reported successful local App sign-in and account import; this change to automatic dialog closing, IDE temporary-instance cleanup, and flows on other systems have not been run for verification
 - **Quota View**: shows Credits usage, remaining credits, and raw plan values
 - **Batch Operations**: supports tags, filters, export, and batch delete/refresh
-- **Switch Injection**: supports injecting and launching Qoder after account switch
+- **Switch Injection**: the clicked entry selects the target client. Cockpit prepares its credentials from the shared RT, including IDE authorization metadata or App job credentials. IDE preparation occurs before closing the current client; App switching first closes the App and saves its final native credentials. Default and managed IDE instance launches use the same preparation contract. A newly returned RT is encrypted and saved before subsequent profile or usage requests. While the App is running, its own session remains responsible for renewal; Cockpit reads it for queries without background auth-file writes. Local compilation and fictional-data regression are verified; native switching and long-term renewal remain unverified.
 
 #### 10.1 Qoder Multi-Instance
 
-Manage Qoder instances with isolated profiles and lifecycle controls.
+Qoder IDE and Qoder CN IDE support multi-account multi-instance parallel runs (instances are managed per variant). Qoder and Qoder CN (App versions) are limited by the official client's single-instance mechanism and cannot run multiple sessions at the same time; use account switching instead.
 
 - **Isolated Profiles**: each instance uses its own user data directory
 - **Quick Lifecycle**: start/stop/force stop instances

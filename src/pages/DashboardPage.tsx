@@ -1,3 +1,6 @@
+import * as qoderService from '../services/qoderService';
+import { useQoderCurrentAccountIds } from '../hooks/useQoderCurrentAccountIds';
+import { getRecommendedQoderAccount } from '../utils/floatingCardSelectors';
 import React, { useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAccountStore } from '../stores/useAccountStore';
@@ -40,7 +43,9 @@ import {
 } from '../types/codebuddy';
 import {
   QoderAccount,
-  getQoderSubscriptionInfo,
+  QoderVariantId,
+  getQoderAccountVariants, qoderAccountSupportsVariant,
+  isQoderVariantId,
 } from '../types/qoder';
 import type { ZcodeAccount } from '../types/zcode';
 import {
@@ -332,6 +337,9 @@ export function DashboardPage({
           await useCodebuddyCnAccountStore.getState().updateAccountTags(accountId, newTags);
           break;
         case 'qoder':
+        case 'qoder_app':
+        case 'qoder_cn_ide':
+        case 'qoder_cn_app':
           await useQoderAccountStore.getState().updateAccountTags(accountId, newTags);
           break;
         case 'zcode':
@@ -508,10 +516,16 @@ export function DashboardPage({
 
   const {
     accounts: qoderAccounts,
-    currentAccountId: qoderCurrentId,
     fetchAccounts: fetchQoderAccounts,
-    switchAccount: switchQoderAccount,
   } = useQoderAccountStore();
+
+  const qoderCurrentIds = useQoderCurrentAccountIds(qoderAccounts);
+  const getQoderAccountsForVariant = (variant: QoderVariantId) =>
+    qoderAccounts.filter((account) => qoderAccountSupportsVariant(account, variant));
+  const getQoderCurrentForVariant = (variant: QoderVariantId) =>
+    getQoderAccountsForVariant(variant).find((account) => account.id === qoderCurrentIds[variant]) ?? null;
+  const getQoderRecommendedForVariant = (variant: QoderVariantId) =>
+    getRecommendedQoderAccount(getQoderAccountsForVariant(variant), qoderCurrentIds[variant]);
 
   const {
     accounts: zcodeAccounts,
@@ -686,6 +700,19 @@ export function DashboardPage({
     return result;
   }, [traeAccounts]);
 
+  const qoderAccountsByVariant = useMemo<Record<QoderVariantId, number>>(() => {
+    const result: Record<QoderVariantId, number> = {
+      qoder: 0,
+      qoder_app: 0,
+      qoder_cn_ide: 0,
+      qoder_cn_app: 0,
+    };
+    for (const account of qoderAccounts) {
+      for (const variant of getQoderAccountVariants(account)) result[variant] += 1;
+    }
+    return result;
+  }, [qoderAccounts]);
+
   // Statistics
   const stats = useMemo(() => {
     return {
@@ -714,7 +741,10 @@ export function DashboardPage({
       cursor: cursorAccounts.length,      grok: grokAccounts.length,
       codebuddy: codebuddyAccounts.length,
       codebuddy_cn: codebuddyCnAccounts.length,
-      qoder: qoderAccounts.length,
+      qoder: qoderAccountsByVariant.qoder,
+      qoder_app: qoderAccountsByVariant.qoder_app,
+      qoder_cn_ide: qoderAccountsByVariant.qoder_cn_ide,
+      qoder_cn_app: qoderAccountsByVariant.qoder_cn_app,
       zcode: zcodeAccounts.length,
       trae: traeAccountsByPlatform.trae.length,
       trae_solo: traeAccountsByPlatform.trae_solo.length,
@@ -722,7 +752,7 @@ export function DashboardPage({
       trae_solo_cn: traeAccountsByPlatform.trae_solo_cn.length,
       workbuddy: workbuddyAccounts.length,
     };
-  }, [agAccounts, codexAccounts, claudeAccounts, zedAccounts, githubCopilotAccounts, windsurfAccounts, kiroAccounts, cursorAccounts, grokAccounts, codebuddyAccounts, codebuddyCnAccounts, qoderAccounts, zcodeAccounts, traeAccounts, traeAccountsByPlatform, workbuddyAccounts]);
+  }, [agAccounts, codexAccounts, claudeAccounts, zedAccounts, githubCopilotAccounts, windsurfAccounts, kiroAccounts, cursorAccounts, grokAccounts, codebuddyAccounts, codebuddyCnAccounts, qoderAccounts, qoderAccountsByVariant, zcodeAccounts, traeAccounts, traeAccountsByPlatform, workbuddyAccounts]);
 
   const dashboardAvailableTags = useMemo(() => {
     const tagSet = new Set<string>();
@@ -779,6 +809,9 @@ export function DashboardPage({
     codebuddy: boolean;
     codebuddyCn: boolean;
     qoder: boolean;
+    qoder_app: boolean;
+    qoder_cn_ide: boolean;
+    qoder_cn_app: boolean;
     zcode: boolean;
     trae: boolean;
     workbuddy: boolean;
@@ -794,6 +827,9 @@ export function DashboardPage({
     codebuddy: false,
     codebuddyCn: false,
     qoder: false,
+    qoder_app: false,
+    qoder_cn_ide: false,
+    qoder_cn_app: false,
     zcode: false,
     trae: false,
     workbuddy: false,
@@ -1303,11 +1339,15 @@ export function DashboardPage({
     }
   };
 
-  const handleRefreshQoder = async (accountId: string) => {
+  const handleRefreshQoder = async (accountId: string, variant: QoderVariantId) => {
     if (refreshing.has(accountId)) return;
     setRefreshing((prev) => new Set(prev).add(accountId));
     try {
-      await useQoderAccountStore.getState().refreshToken(accountId);
+      try {
+        await qoderService.refreshQoderToken(accountId, variant);
+      } finally {
+        await fetchQoderAccounts();
+      }
     } catch (error) {
       console.error('Refresh failed:', error);
     } finally {
@@ -1397,18 +1437,20 @@ export function DashboardPage({
     }
   };
 
-  const handleRefreshQoderCard = async () => {
-    if (cardRefreshing.qoder) return;
-    setCardRefreshing((prev) => ({ ...prev, qoder: true }));
-    const idsToRefresh = [qoderCurrent?.id, qoderRecommended?.id].filter(Boolean) as string[];
+  const handleRefreshQoderCard = async (variant: QoderVariantId) => {
+    if (cardRefreshing[variant]) return;
+    setCardRefreshing((prev) => ({ ...prev, [variant]: true }));
+    const idsToRefresh = Array.from(new Set(
+      [getQoderCurrentForVariant(variant)?.id, getQoderRecommendedForVariant(variant)?.id].filter(Boolean) as string[],
+    ));
     try {
       for (const id of idsToRefresh) {
-        await useQoderAccountStore.getState().refreshToken(id);
+        await useQoderAccountStore.getState().refreshToken(id, variant);
       }
     } catch (error) {
       console.error('Card refresh failed:', error);
     } finally {
-      setCardRefreshing((prev) => ({ ...prev, qoder: false }));
+      setCardRefreshing((prev) => ({ ...prev, [variant]: false }));
     }
   };
 
@@ -1493,11 +1535,11 @@ export function DashboardPage({
     }
   };
 
-  const handleSwitchQoder = async (accountId: string) => {
+  const handleSwitchQoder = async (accountId: string, variant: QoderVariantId) => {
     if (switching.has(accountId)) return;
     setSwitching((prev) => new Set(prev).add(accountId));
     try {
-      await switchQoderAccount(accountId);
+      await useQoderAccountStore.getState().switchAccount(accountId, variant);
     } catch (error) {
       console.error('Switch failed:', error);
     } finally {
@@ -1707,11 +1749,6 @@ export function DashboardPage({
   const codebuddyCnCurrent = useMemo(
     () => resolveDashboardCurrentAccount(codebuddyCnAccounts, codebuddyCnCurrentId),
     [codebuddyCnAccounts, codebuddyCnCurrentId],
-  );
-
-  const qoderCurrent = useMemo(
-    () => resolveDashboardCurrentAccount(qoderAccounts, qoderCurrentId),
-    [qoderAccounts, qoderCurrentId],
   );
 
   const zcodeCurrent = useMemo(
@@ -1964,31 +2001,6 @@ export function DashboardPage({
       return candidateScore.freshness > bestScore.freshness ? candidate : best;
     });
   }, [codebuddyCnAccounts, codebuddyCnCurrent?.id]);
-
-  const qoderRecommended = useMemo(() => {
-    if (qoderAccounts.length <= 1) return null;
-    const currentId = qoderCurrent?.id;
-    const others = qoderAccounts.filter((a) => a.id !== currentId);
-    if (others.length === 0) return null;
-
-    const getScore = (account: QoderAccount) => {
-      const sub = getQoderSubscriptionInfo(account);
-      const usedPercent = sub.totalUsagePercentage ?? sub.userQuota.percentage ?? 101;
-      return {
-        remaining: 100 - usedPercent,
-        freshness: account.last_used || account.created_at || 0,
-      };
-    };
-
-    return others.reduce((best, candidate) => {
-      const bestScore = getScore(best);
-      const candidateScore = getScore(candidate);
-      if (candidateScore.remaining !== bestScore.remaining) {
-        return candidateScore.remaining > bestScore.remaining ? candidate : best;
-      }
-      return candidateScore.freshness > bestScore.freshness ? candidate : best;
-    });
-  }, [qoderAccounts, qoderCurrent?.id]);
 
   const zcodeRecommended = useMemo(() => {
     if (zcodeAccounts.length <= 1) return null;
@@ -2602,17 +2614,17 @@ export function DashboardPage({
     });
   };
 
-  const renderQoderAccountContent = (account: QoderAccount | null) => {
+  const renderQoderAccountContent = (account: QoderAccount | null, variant: QoderVariantId) => {
     if (!account) return <div className="empty-slot">{t('dashboard.noAccount', '无账号')}</div>;
 
     const presentation = buildQoderAccountPresentation(account, t);
     return renderUnifiedAccountCard({
       presentation,
-      onRefresh: () => handleRefreshQoder(account.id),
-      onSwitch: () => handleSwitchQoder(account.id),
+      onRefresh: () => handleRefreshQoder(account.id, variant),
+      onSwitch: () => handleSwitchQoder(account.id, variant),
       isRefreshing: refreshing.has(account.id),
       isSwitching: switching.has(account.id),
-      onEditTags: () => setTagModalState({ accountId: account.id, platform: 'qoder', tags: account.tags || [] }),
+      onEditTags: () => setTagModalState({ accountId: account.id, platform: variant, tags: account.tags || [] }),
     });
   };
 
@@ -2673,6 +2685,9 @@ export function DashboardPage({
     codebuddy: stats.codebuddy,
     codebuddy_cn: stats.codebuddy_cn,
     qoder: stats.qoder,
+    qoder_app: stats.qoder_app,
+    qoder_cn_ide: stats.qoder_cn_ide,
+    qoder_cn_app: stats.qoder_cn_app,
     zcode: stats.zcode,
     trae: stats.trae,
     trae_solo: stats.trae_solo,
@@ -3288,22 +3303,24 @@ export function DashboardPage({
       );
     }
 
-    if (platformId === 'qoder') {
+    if (isQoderVariantId(platformId)) {
+      const qoderCurrent = getQoderCurrentForVariant(platformId);
+      const qoderRecommended = getQoderRecommendedForVariant(platformId);
       return (
         <div className="main-card windsurf-card" key={platformId}>
           <div className="main-card-header">
             <div className="header-title">
-              <QoderIcon style={{ width: 18, height: 18 }} />
+              <QoderIcon variant={platformId} style={{ width: 18, height: 18 }} />
               <h3>{getPlatformLabel(platformId, t)}</h3>
             </div>
             <div className="header-action-group">
               <button
                 className="header-action-btn"
-                onClick={handleRefreshQoderCard}
-                disabled={cardRefreshing.qoder}
+                onClick={() => handleRefreshQoderCard(platformId)}
+                disabled={cardRefreshing[platformId]}
                 title={t('common.refresh', '刷新')}
               >
-                <RotateCw size={14} className={cardRefreshing.qoder ? 'loading-spinner' : ''} />
+                <RotateCw size={14} className={cardRefreshing[platformId] ? 'loading-spinner' : ''} />
                 <span>{t('common.refresh', '刷新')}</span>
               </button>
               {renderHideCardButton(platformId)}
@@ -3313,7 +3330,7 @@ export function DashboardPage({
           <div className="split-content">
             <div className="split-half current-half">
               <span className="half-label"><CheckCircle2 size={12} /> {t('dashboard.current', '当前账户')}</span>
-              {renderQoderAccountContent(qoderCurrent)}
+              {renderQoderAccountContent(qoderCurrent, platformId)}
             </div>
 
             <div className="split-divider"></div>
@@ -3321,14 +3338,14 @@ export function DashboardPage({
             <div className="split-half recommend-half">
               <span className="half-label"><Sparkles size={12} /> {t('dashboard.recommended', '推荐账号')}</span>
               {qoderRecommended ? (
-                renderQoderAccountContent(qoderRecommended)
+                renderQoderAccountContent(qoderRecommended, platformId)
               ) : (
                 <div className="empty-slot-text">{t('dashboard.noRecommendation', '暂无更好推荐')}</div>
               )}
             </div>
           </div>
 
-          <button className="card-footer-action" onClick={() => onNavigate('qoder')}>
+          <button className="card-footer-action" onClick={() => navigateToPlatform(platformId)}>
             {t('dashboard.viewAllAccounts', '查看所有账号')}
           </button>
         </div>

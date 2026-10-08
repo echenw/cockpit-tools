@@ -45,6 +45,7 @@ import { useGrokAccountStore } from './stores/useGrokAccountStore';
 import { useCodebuddyAccountStore } from './stores/useCodebuddyAccountStore';
 import { useCodebuddyCnAccountStore } from './stores/useCodebuddyCnAccountStore';
 import { useQoderAccountStore } from './stores/useQoderAccountStore';
+import { QODER_VARIANT_DISPLAY_NAMES, isQoderVariantId, type QoderVariantId } from './types/qoder';
 import { useTraeAccountStore } from './stores/useTraeAccountStore';
 import { useWorkbuddyAccountStore } from './stores/useWorkbuddyAccountStore';
 import { useZedAccountStore } from './stores/useZedAccountStore';
@@ -221,6 +222,9 @@ const RENDERABLE_PAGE_VALUES: readonly Page[] = [
   'codebuddy',
   'codebuddy-cn',
   'qoder',
+  'qoder-app',
+  'qoder-cn-ide',
+  'qoder-cn-app',
   'zcode',
   'trae',
   'trae-solo',
@@ -256,7 +260,10 @@ const TOP_PROMO_PAGE_PLATFORM_TARGETS: Partial<Record<Page, readonly string[]>> 
   grok: ['grok'],
   codebuddy: ['codebuddy'],
   'codebuddy-cn': ['codebuddy-cn'],
-  qoder: ['qoder'],
+  qoder: ['qoder', 'qoder-suite'],
+  'qoder-app': ['qoder_app', 'qoder-suite'],
+  'qoder-cn-ide': ['qoder_cn_ide', 'qoder-suite'],
+  'qoder-cn-app': ['qoder_cn_app', 'qoder-suite'],
   zcode: ['zcode'],
   trae: ['trae', 'trae-suite'],
   'trae-solo': ['trae-solo', 'trae-suite'],
@@ -378,6 +385,9 @@ interface GeneralConfig extends GeneralConfigTheme, GeneralConfigLanguage {
   codebuddy_app_path: string;
   codebuddy_cn_app_path: string;
   qoder_app_path: string;
+  qoder_app_variant_path: string;
+  qoder_cn_ide_app_path: string;
+  qoder_cn_app_path: string;
   trae_app_path: string;
   trae_solo_app_path: string;
   trae_cn_app_path: string;
@@ -402,6 +412,9 @@ type AppPathMissingDetail = {
     | 'codebuddy'
     | 'codebuddy_cn'
     | 'qoder'
+    | 'qoder_app'
+    | 'qoder_cn_ide'
+    | 'qoder_cn_app'
     | 'trae'
     | 'trae_solo'
     | 'trae_cn'
@@ -499,7 +512,7 @@ type QuotaAlertPlatform =
   | 'grok'
   | 'codebuddy'
   | 'codebuddy_cn'
-  | 'qoder'
+  | QoderVariantId
   | 'trae'
   | 'workbuddy'
   | 'zed';
@@ -582,6 +595,7 @@ function isVersionLowerThan(currentVersion: string, minimumVersion: string): boo
 }
 
 function normalizeQuotaAlertPlatform(platform: string | undefined): QuotaAlertPlatform {
+  if (platform && isQoderVariantId(platform)) return platform;
   switch (platform) {
     case 'codex':
       return 'codex';
@@ -602,8 +616,6 @@ function normalizeQuotaAlertPlatform(platform: string | undefined): QuotaAlertPl
       return 'codebuddy';
     case 'codebuddy_cn':
       return 'codebuddy_cn';
-    case 'qoder':
-      return 'qoder';
     case 'trae':
     case 'trae-solo':
     case 'trae_solo':
@@ -623,6 +635,7 @@ function getQuotaAlertPlatformLabel(
   platform: QuotaAlertPlatform,
   t: (key: string, defaultValue: string) => string,
 ): string {
+  if (isQoderVariantId(platform)) return QODER_VARIANT_DISPLAY_NAMES[platform];
   switch (platform) {
     case 'codex':
       return t('nav.codex', 'Codex');
@@ -642,8 +655,6 @@ function getQuotaAlertPlatformLabel(
       return 'CodeBuddy';
     case 'codebuddy_cn':
       return t('nav.codebuddyCn', 'CodeBuddy CN');
-    case 'qoder':
-      return t('nav.qoder', 'Qoder');
     case 'trae':
       return t('nav.trae', 'Trae');
     case 'zed':
@@ -675,6 +686,12 @@ function getQuotaAlertTargetPage(platform: QuotaAlertPlatform): Page {
       return 'codebuddy-cn';
     case 'qoder':
       return 'qoder';
+    case 'qoder_app':
+      return 'qoder-app';
+    case 'qoder_cn_ide':
+      return 'qoder-cn-ide';
+    case 'qoder_cn_app':
+      return 'qoder-cn-app';
     case 'trae':
       return 'trae';
     case 'workbuddy':
@@ -707,7 +724,10 @@ function getQuotaAlertQuickSettingsType(platform: QuotaAlertPlatform): QuickSett
     case 'codebuddy_cn':
       return 'codebuddy_cn';
     case 'qoder':
-      return 'qoder';
+    case 'qoder_app':
+    case 'qoder_cn_ide':
+    case 'qoder_cn_app':
+      return platform;
     case 'trae':
       return 'trae';
     case 'workbuddy':
@@ -2941,9 +2961,9 @@ function MainApp() {
                     } else if (platform === 'codebuddy_cn') {
                       await useCodebuddyCnAccountStore.getState().switchAccount(targetAccountId);
                       setPage('codebuddy-cn');
-                    } else if (platform === 'qoder') {
-                      await useQoderAccountStore.getState().switchAccount(targetAccountId);
-                      setPage('qoder');
+                    } else if (isQoderVariantId(platform)) {
+                      await useQoderAccountStore.getState().switchAccount(targetAccountId, platform);
+                      setPage(getQuotaAlertTargetPage(platform));
                     } else if (platform === 'trae') {
                       await useTraeAccountStore.getState().switchAccount(targetAccountId);
                       setPage('trae');
@@ -3228,6 +3248,9 @@ function MainApp() {
         detail.app !== 'codebuddy' &&
         detail.app !== 'codebuddy_cn' &&
         detail.app !== 'qoder' &&
+        detail.app !== 'qoder_app' &&
+        detail.app !== 'qoder_cn_ide' &&
+        detail.app !== 'qoder_cn_app' &&
         !isTraePlatformApp(detail.app) &&
         detail.app !== 'workbuddy' &&
         detail.app !== 'zed'
@@ -3292,6 +3315,12 @@ function MainApp() {
                 ? config.codebuddy_cn_app_path
               : appPathMissing.app === 'qoder'
                 ? config.qoder_app_path
+              : appPathMissing.app === 'qoder_app'
+                ? config.qoder_app_variant_path
+              : appPathMissing.app === 'qoder_cn_ide'
+                ? config.qoder_cn_ide_app_path
+              : appPathMissing.app === 'qoder_cn_app'
+                ? config.qoder_cn_app_path
               : isTraePlatformApp(appPathMissing.app)
                 ? getTraeAppPath(config, appPathMissing.app)
               : appPathMissing.app === 'workbuddy'
@@ -3374,6 +3403,9 @@ function MainApp() {
         await useClaudeAccountStore.getState().switchAccount(retry.accountId);
         await useClaudeAccountStore.getState().fetchCurrentAccountId();
         setPage('claude');
+      } else if (retry?.kind === 'switchAccount' && retry.accountId && isQoderVariantId(app)) {
+        await useQoderAccountStore.getState().switchAccount(retry.accountId, app);
+        setPage(getQuotaAlertTargetPage(app));
       } else if (retry?.kind === 'switchAccount' && retry.accountId) {
         await invoke('switch_account', {
           accountId: retry.accountId,
@@ -3400,8 +3432,8 @@ function MainApp() {
           await invoke('codebuddy_start_instance', { instanceId: retry.instanceId });
         } else if (app === 'codebuddy_cn') {
           await invoke('codebuddy_cn_start_instance', { instanceId: retry.instanceId });
-        } else if (app === 'qoder') {
-          await invoke('qoder_start_instance', { instanceId: retry.instanceId });
+        } else if (app === 'qoder' || app === 'qoder_cn_ide') {
+          await invoke('qoder_start_instance', { variantKey: app, instanceId: retry.instanceId });
         } else if (isTraePlatformApp(app)) {
           await invoke('trae_start_instance', { platformId: app, instanceId: retry.instanceId });
         } else if (app === 'workbuddy') {
@@ -3428,8 +3460,8 @@ function MainApp() {
           await invoke('codebuddy_start_instance', { instanceId: '__default__' });
         } else if (app === 'codebuddy_cn') {
           await invoke('codebuddy_cn_start_instance', { instanceId: '__default__' });
-        } else if (app === 'qoder') {
-          await invoke('qoder_start_instance', { instanceId: '__default__' });
+        } else if (app === 'qoder' || app === 'qoder_cn_ide') {
+          await invoke('qoder_start_instance', { variantKey: app, instanceId: '__default__' });
         } else if (isTraePlatformApp(app)) {
           await invoke('trae_start_instance', { platformId: app, instanceId: '__default__' });
         } else if (app === 'workbuddy') {
@@ -3678,7 +3710,13 @@ function MainApp() {
               : appPathMissing.app === 'codebuddy_cn'
                 ? 'CodeBuddy CN'
               : appPathMissing.app === 'qoder'
+                ? 'Qoder IDE'
+              : appPathMissing.app === 'qoder_app'
                 ? 'Qoder'
+              : appPathMissing.app === 'qoder_cn_ide'
+                ? 'Qoder CN IDE'
+              : appPathMissing.app === 'qoder_cn_app'
+                ? 'Qoder CN'
               : isTraePlatformApp(appPathMissing.app)
                 ? 'Trae'
               : appPathMissing.app === 'workbuddy'
@@ -3706,7 +3744,13 @@ function MainApp() {
               : appPathMissing.app === 'codebuddy_cn'
                 ? t('quickSettings.codebuddyCn.appPath', 'CodeBuddy CN 路径')
               : appPathMissing.app === 'qoder'
-                ? t('quickSettings.qoder.appPath', 'Qoder 路径')
+                ? t('quickSettings.qoder.appPathIde', 'Qoder IDE 路径')
+              : appPathMissing.app === 'qoder_app'
+                ? t('quickSettings.qoder.appPathApp', 'Qoder 路径')
+              : appPathMissing.app === 'qoder_cn_ide'
+                ? t('quickSettings.qoder.appPathCnIde', 'Qoder CN IDE 路径')
+              : appPathMissing.app === 'qoder_cn_app'
+                ? t('quickSettings.qoder.appPathCnApp', 'Qoder CN 路径')
               : isTraePlatformApp(appPathMissing.app)
                 ? t('quickSettings.trae.appPath', 'Trae 路径')
               : t('quickSettings.antigravity.appPath', '启动路径')
@@ -4090,7 +4134,16 @@ function MainApp() {
             <CodebuddyCnAccountsPage />
           </VisibleBootPage>
           <VisibleBootPage when={page === 'qoder'}>
-            <QoderAccountsPage />
+            <QoderAccountsPage variantId="qoder" />
+          </VisibleBootPage>
+          <VisibleBootPage when={page === 'qoder-app'}>
+            <QoderAccountsPage variantId="qoder_app" />
+          </VisibleBootPage>
+          <VisibleBootPage when={page === 'qoder-cn-ide'}>
+            <QoderAccountsPage variantId="qoder_cn_ide" />
+          </VisibleBootPage>
+          <VisibleBootPage when={page === 'qoder-cn-app'}>
+            <QoderAccountsPage variantId="qoder_cn_app" />
           </VisibleBootPage>
           <VisibleBootPage when={page === 'zcode'}>
             <ZcodeAccountsPage />

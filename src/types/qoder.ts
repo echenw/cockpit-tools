@@ -1,5 +1,7 @@
-export interface QoderAccount {
-  id: string;
+export interface QoderAccount {  id: string;
+  /** 最近的授权/凭据来源；同地区账号同时适用于 App 和 IDE。 */
+  variant?: string | null;
+  legacy_ids?: string[];
   email: string;
   user_id?: string | null;
   display_name?: string | null;
@@ -223,29 +225,59 @@ function getRawPlanTag(account: QoderAccount): string | null {
     getNestedValue(account.auth_user_plan_raw, ['tier_name']),
     getNestedValue(account.auth_user_plan_raw, ['tierName']),
     getNestedValue(account.auth_user_plan_raw, ['planTierName']),
+    getNestedValue(account.auth_user_plan_raw, ['plan_name']),
+    getNestedValue(account.auth_user_plan_raw, ['planName']),
     getNestedValue(account.auth_user_plan_raw, ['plan']),
-    getNestedValue(account.auth_user_info_raw, ['userTag']),
-    getNestedValue(account.auth_user_info_raw, ['user_tag']),
     getNestedValue(account.auth_credit_usage_raw, ['plan_tier_name']),
     getNestedValue(account.auth_credit_usage_raw, ['tier_name']),
     getNestedValue(account.auth_credit_usage_raw, ['tierName']),
     getNestedValue(account.auth_credit_usage_raw, ['planTierName']),
     account.plan_type,
+    getNestedValue(account.auth_user_info_raw, ['userTag']),
+    getNestedValue(account.auth_user_info_raw, ['user_tag']),
+    getNestedValue(account.auth_credit_usage_raw, ['userType']),
+    getNestedValue(account.auth_credit_usage_raw, ['user_type']),
+    getNestedValue(account.auth_user_plan_raw, ['userType']),
+    getNestedValue(account.auth_user_plan_raw, ['user_type']),
+    getNestedValue(account.auth_user_info_raw, ['userType']),
+    getNestedValue(account.auth_user_info_raw, ['user_type']),
   );
 }
 
+// 按 Qoder CN App/IDE 已确认的接口枚举显示用户可读套餐名。
+const QODER_PLAN_LABELS: Record<string, string> = {
+  personal_standard: 'Free',
+  personal_professional_trial: 'Free',
+  personal_professional: 'Pro',
+  personal_professional_plus: 'Pro+',
+  personal_ultra: 'Ultra',
+  teams: 'Teams',
+  enterprise: 'Enterprise',
+  enterprise_standard: 'Enterprise Standard',
+  enterprise_professional: 'Enterprise VPC',
+  'enterprise standard': 'Enterprise Standard',
+  'enterprise vpc': 'Enterprise VPC',
+  '体验版': 'Free',
+  '专业版': 'Pro',
+  '高级版': 'Pro+',
+  '旗舰版': 'Ultra',
+  '团队版': 'Teams',
+  '企业标准版': 'Enterprise Standard',
+  '企业专属版': 'Enterprise VPC',
+};
+
 export function getQoderAccountDisplayEmail(account: QoderAccount): string {
-  return (
-    account.email ||
-    account.display_name ||
-    account.user_id ||
-    account.id
+  const email = account.email?.trim();
+  if (email && email.toLowerCase() !== 'unknown@qoder.local') return email;
+  const securityMobile = toNonEmptyString(
+    getNestedValue(account.auth_user_info_raw, ['security_mobile']),
   );
+  return securityMobile || account.display_name || account.user_id || account.id;
 }
 
 export function getQoderPlanBadge(account: QoderAccount): string {
   const raw = getRawPlanTag(account);
-  if (raw) return raw;
+  if (raw) return QODER_PLAN_LABELS[raw.trim().toLowerCase()] ?? raw;
   return 'UNKNOWN';
 }
 
@@ -411,4 +443,89 @@ export function getQoderUsageOverview(account: QoderAccount): QoderUsageOverview
 
 export function hasQoderQuotaData(account: QoderAccount): boolean {
   return account.auth_credit_usage_raw != null;
+}
+
+// ---------------------------------------------------------------------------
+// Qoder 套件变体：四个变体键与显示名（结构对齐 TraePlatformKind）。
+//
+// 显示名为固定品牌字面量，须逐字渲染、不做意译；经 `qoder.suite.variants.*`
+// 本地化（品牌字面量，各语言一致）。
+//
+// variant 记录凭据来源；账号身份按地区共享，四个客户端入口保持独立。
+// ---------------------------------------------------------------------------
+
+export type QoderVariantId = 'qoder' | 'qoder_app' | 'qoder_cn_ide' | 'qoder_cn_app';
+
+export const QODER_VARIANT_IDS: readonly QoderVariantId[] = [
+  'qoder',
+  'qoder_app',
+  'qoder_cn_ide',
+  'qoder_cn_app',
+];
+
+/**
+ * 支持应用多开的 Qoder 变体：仅 IDE 系。
+ * App 系（qoder_app / qoder_cn_app）客户端受官方单实例机制限制，
+ * `--user-data-dir` 与 e2e 旁路均被客户端显式封禁，无法同时运行多个登录态。
+ */
+export type QoderInstanceVariantId = Extract<QoderVariantId, 'qoder' | 'qoder_cn_ide'>;
+
+export const QODER_INSTANCE_VARIANT_IDS: readonly QoderInstanceVariantId[] = [
+  'qoder',
+  'qoder_cn_ide',
+];
+
+export function isQoderVariantId(value: string): value is QoderVariantId {
+  return QODER_VARIANT_IDS.some((variant) => variant === value);
+}
+
+/** 固定显示名（品牌字面量，逐字渲染）。 */
+export const QODER_VARIANT_DISPLAY_NAMES: Record<QoderVariantId, string> = {
+  qoder: 'Qoder IDE',
+  qoder_app: 'Qoder',
+  qoder_cn_ide: 'Qoder CN IDE',
+  qoder_cn_app: 'Qoder CN',
+};
+
+function toNonEmptyVariantString(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+export function normalizeQoderVariantId(raw: unknown): QoderVariantId | null {
+  const value = toNonEmptyVariantString(raw);
+  if (!value) return null;
+  const normalized = value.toLowerCase().replace(/-/g, '_');
+  switch (normalized) {
+    case 'qoder':
+      return 'qoder';
+    case 'qoder_app':
+      return 'qoder_app';
+    case 'qoder_cn_ide':
+      return 'qoder_cn_ide';
+    case 'qoder_cn_app':
+      return 'qoder_cn_app';
+    default:
+      return null;
+  }
+}
+
+/**
+ * 返回凭据来源变体；列表归属请使用 qoderAccountSupportsVariant。
+ */
+export function getQoderAccountVariantId(account: QoderAccount): QoderVariantId {
+  return normalizeQoderVariantId(account.variant) ?? 'qoder';
+}
+
+/** Client navigation stays four-way; account membership is regional. */
+export function qoderAccountSupportsVariant(account: Pick<QoderAccount, 'variant'>, variant: string): boolean {
+  const source = account.variant == null ? 'qoder' : normalizeQoderVariantId(account.variant);
+  const target = normalizeQoderVariantId(variant);
+  if (!source || !target) return false;
+  return source.startsWith('qoder_cn_') === target.startsWith('qoder_cn_');
+}
+
+export function getQoderAccountVariants(account: QoderAccount): QoderVariantId[] {
+  return QODER_VARIANT_IDS.filter((variant) => qoderAccountSupportsVariant(account, variant));
 }

@@ -23,6 +23,7 @@ type InstancesAppType =
   | 'codebuddy'
   | 'codebuddy_cn'
   | 'qoder'
+  | 'qoder_cn_ide'
   | 'trae'
   | 'trae_solo'
   | 'trae_cn'

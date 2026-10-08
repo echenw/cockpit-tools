@@ -40,6 +40,7 @@ import { readAccountsOverviewFilterField, readAccountsOverviewFilterPersistenceE
 import { isCodexLocalAccessRiskNoticeDismissed, setCodexLocalAccessRiskNoticeDismissed, type CodexLocalAccessRiskNoticeAction } from "../utils/codexLocalAccessRiskNotice";
 import { getMfaOtpToken, loadSavedMfaRecords, parseMfaCredentialInput, upsertSavedMfaRecord, type MfaRecord } from "../utils/mfaVault";
 import { findFirstMailVerificationCode } from "../utils/mailVerificationCode";
+import { copyTextToClipboard } from "../utils/clipboard";
 import { ACTIVE_GROUP_ID_FIELD, buildCodexAccountNoteForm, buildExportFileName, CODEX_BATCH_IMPORT_SESSION_STORAGE_KEY, CODEX_FILTER_PERSISTENCE_SCOPE, CODEX_HIDE_RELAY_QUOTA_LEGACY_KEY, CODEX_LOCAL_ACCESS_EXPANDED_KEY, CODEX_OVERVIEW_LAYOUT_MODE_KEY, EMPTY_CODEX_ACCOUNT_NOTE_FORM, EXPIRY_FILTER_FIELD, FILTER_TYPES_FIELD, getCodexAccountNoteTitle, getDirectoryPath, GROUP_FILTER_FIELD, hasCodexAccountNoteDetails, hasCodexAccountNoteFormDetails, isHttpLikeUrl, joinFilePath, normalizeCodexOverviewLayoutMode, normalizeHttpBaseUrl, readStoredLocalAccessAddressKind, SEARCH_QUERY_FIELD, shouldAutoHideBatchDeleteJob, type CodexAccountNoteFieldErrors, type CodexAccountNoteFormState, type CodexAccountNoteMailPreviewSnapshot, type CodexAccountNoteMailPreviewState, type CodexBatchImportFilter, type CodexCliLaunchModalState, type CodexOverviewGeneralConfig, type CodexOverviewLayoutMode } from "./codexAccountsControllerModel";
 
 /** 封装 useCodexAccountsPageController 的 useCodexAccountsBaseController 业务域状态与动作。 */
@@ -1077,7 +1078,7 @@ export function useCodexAccountsBaseController() {
     const handleCopyReauthEmail = useCallback(async () => {
       if (!reauthTargetEmail) return;
       try {
-        await navigator.clipboard.writeText(reauthTargetEmail);
+        await copyTextToClipboard(reauthTargetEmail);
         setReauthEmailCopied(true);
         window.setTimeout(() => setReauthEmailCopied(false), 1200);
       } catch {}
@@ -1532,7 +1533,7 @@ export function useCodexAccountsBaseController() {
         return;
       try {
         clearExportModalError();
-        await navigator.clipboard.writeText(formattedExportJsonContent);
+        await copyTextToClipboard(formattedExportJsonContent);
         setFormattedExportJsonCopied(true);
         window.setTimeout(() => setFormattedExportJsonCopied(false), 1200);
       } catch (error) {
@@ -1708,7 +1709,7 @@ export function useCodexAccountsBaseController() {
       if (!formattedExportSavedPath) return;
       try {
         clearExportModalError();
-        await navigator.clipboard.writeText(formattedExportSavedPath);
+        await copyTextToClipboard(formattedExportSavedPath);
         setFormattedExportPathCopied(true);
         window.setTimeout(() => setFormattedExportPathCopied(false), 1200);
       } catch (error) {
@@ -2587,7 +2588,7 @@ export function useCodexAccountsBaseController() {
         const text = value?.trim();
         if (!text) return;
         try {
-          await navigator.clipboard.writeText(text);
+          await copyTextToClipboard(text);
           setAccountNoteCopiedKey(copyKey);
           window.setTimeout(() => {
             setAccountNoteCopiedKey((current) =>

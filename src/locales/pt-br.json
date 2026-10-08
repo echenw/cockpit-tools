@@ -5780,7 +5780,10 @@
     },
     "qoder": {
       "title": "Configuracoes do Qoder",
-      "appPath": "Caminho do Qoder"
+      "appPathIde": "Caminho do Qoder IDE",
+      "appPathApp": "Caminho do Qoder",
+      "appPathCnIde": "Caminho do Qoder CN IDE",
+      "appPathCnApp": "Caminho do Qoder CN"
     },
     "trae": {
       "title": "Configuracoes do Trae",
@@ -6466,6 +6469,18 @@
   },
   "qoder": {
     "title": "Gerenciamento de contas do Qoder",
+    "suite": {
+      "sharedAccounts": "App e IDE compartilham contas em cada região. Autorize ou importe uma vez para usar ambos.",
+      "deleteSharedSingle": "Excluir esta conta compartilhada das listas de App e IDE desta região?",
+      "deleteSharedMulti": "Excluir {{count}} contas compartilhadas das listas de App e IDE desta região?",
+      "tabListLabel": "Variantes do Qoder",
+      "variants": {
+        "qoder": "Qoder IDE",
+        "qoder_app": "Qoder",
+        "qoder_cn_ide": "Qoder CN IDE",
+        "qoder_cn_app": "Qoder CN"
+      }
+    },
     "comingSoon": {
       "title": "Multi-Instância Em Breve",
       "desc": "Execute várias instâncias do Qoder.app com diferentes contas simultaneamente."
@@ -6473,11 +6488,13 @@
     "instances": {
       "unsupported": {
         "descPlatform": "Múltiplas instâncias do Qoder são compatíveis apenas com macOS, Windows e Linux."
-      }
+      },
+      "appMultiInstanceUnsupported": "O cliente {{variant}} não oferece suporte a várias instâncias: o mecanismo oficial de instância única impede a execução simultânea de várias sessões. Use a troca de conta."
     },
     "oauth": {
       "hint": "Conclua o login na página do navegador que foi aberta: se a página de login não abrir automaticamente, clique em \"Copiar link de login\", copie o link e cole-o no navegador para concluir o login.",
-      "copyLoginUrl": "Copiar link de login"
+      "copyLoginUrl": "Copiar link de login",
+      "accountNotVisible": "A conta autorizada não apareceu na lista de contas salvas"
     },
     "usageOverview": {
       "title": "Visão geral de uso",
@@ -6500,7 +6517,8 @@
     "import": {
       "localDesc": "Lê o estado atual de login do cliente local do Qoder, incluindo informações do usuário, plano e uso de créditos.",
       "localFailed": "Falha na importação local: {{error}}",
-      "localSuccess": "Conta importada do Qoder local."
+      "localSuccess": "Conta importada do Qoder local.",
+      "autoCloseCountdown": "Fechará automaticamente em {{seconds}} s"
     },
     "empty": {
       "desc": "Clique em \"Adicionar conta\" para usar login de autenticação, importação local ou importação JSON."

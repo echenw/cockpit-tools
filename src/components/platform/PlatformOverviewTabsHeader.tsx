@@ -44,6 +44,9 @@ export type PlatformOverviewHeaderId =
   | 'codebuddy'
   | 'codebuddy_cn'
   | 'qoder'
+  | 'qoder_app'
+  | 'qoder_cn_ide'
+  | 'qoder_cn_app'
   | 'zcode'
   | 'trae'
   | 'trae_solo'
@@ -113,8 +116,20 @@ const CONFIGS: Record<PlatformOverviewHeaderId, PlatformOverviewConfig> = {
     overviewIcon: <CodebuddyIcon className="tab-icon" />,
   },
   qoder: {
+    platformLabel: 'Qoder IDE',
+    overviewIcon: <QoderIcon variant="qoder" className="tab-icon" />,
+  },
+  qoder_app: {
     platformLabel: 'Qoder',
-    overviewIcon: <QoderIcon className="tab-icon" />,
+    overviewIcon: <QoderIcon variant="qoder_app" className="tab-icon" />,
+  },
+  qoder_cn_ide: {
+    platformLabel: 'Qoder CN IDE',
+    overviewIcon: <QoderIcon variant="qoder_cn_ide" className="tab-icon" />,
+  },
+  qoder_cn_app: {
+    platformLabel: 'Qoder CN',
+    overviewIcon: <QoderIcon variant="qoder_cn_app" className="tab-icon" />,
   },
   zcode: {
     platformLabel: 'ZCode',

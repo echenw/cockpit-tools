@@ -5927,7 +5927,10 @@
     },
     "qoder": {
       "title": "Qoder Settings​",
-      "appPath": "Qoder Path​"
+      "appPathIde": "Qoder IDE Path​",
+      "appPathApp": "Qoder Path​",
+      "appPathCnIde": "Qoder CN IDE Path​",
+      "appPathCnApp": "Qoder CN Path​"
     },
     "zcode": {
       "title": "Pengaturan ZCode",
@@ -6513,6 +6516,18 @@
   },
   "qoder": {
     "title": "Akun Qoder",
+    "suite": {
+      "sharedAccounts": "App dan IDE berbagi akun dalam satu wilayah. Cukup otorisasi atau impor sekali untuk menggunakan keduanya.",
+      "deleteSharedSingle": "Hapus akun bersama ini dari daftar App dan IDE di wilayah ini?",
+      "deleteSharedMulti": "Hapus {{count}} akun bersama dari daftar App dan IDE di wilayah ini?",
+      "tabListLabel": "Varian Qoder",
+      "variants": {
+        "qoder": "Qoder IDE",
+        "qoder_app": "Qoder",
+        "qoder_cn_ide": "Qoder CN IDE",
+        "qoder_cn_app": "Qoder CN"
+      }
+    },
     "flowNotice": {
       "title": "Panduan akun Qoder (klik untuk perluas/ciutkan)",
       "desc": "Mendukung otorisasi login perangkat CLI resmi, impor lokal, impor JSON, injeksi penggantian akun, ikatan multi-instansi, dan ringkasan kuota. Otorisasi peramban tidak memerlukan Qoder tetap berjalan; injeksi menulis kembali menggunakan aturan on-disk klien Qoder yang sebenarnya.",
@@ -6521,7 +6536,8 @@
     },
     "oauth": {
       "hint": "Klik tombol di bawah ini untuk menyelesaikan otorisasi Qoder di peramban Anda. Ini menggunakan alur login perangkat CLI resmi dan tidak memerlukan Qoder tetap berjalan.",
-      "copyLoginUrl": "Salin URL Masuk"
+      "copyLoginUrl": "Salin URL Masuk",
+      "accountNotVisible": "Akun yang diotorisasi tidak muncul dalam daftar akun tersimpan"
     },
     "usageOverview": {
       "title": "Ringkasan Penggunaan",
@@ -6539,7 +6555,8 @@
     "instances": {
       "unsupported": {
         "descPlatform": "Multi-instansi Qoder hanya tersedia di macOS, Windows, dan Linux."
-      }
+      },
+      "appMultiInstanceUnsupported": "Klien {{variant}} tidak mendukung multi-instans: mekanisme satu instans resmi mencegah beberapa sesi berjalan bersamaan. Gunakan fitur ganti akun."
     },
     "addModal": {
       "title": "Tambah Akun Qoder"
@@ -6547,7 +6564,8 @@
     "import": {
       "localDesc": "Baca status masuk saat ini dari klien Qoder lokal, termasuk info pengguna, paket, dan penggunaan kredit.",
       "localFailed": "Import lokal gagal: {{error}}",
-      "localSuccess": "Akun berhasil diimpor dari Qoder lokal."
+      "localSuccess": "Akun berhasil diimpor dari Qoder lokal.",
+      "autoCloseCountdown": "Menutup otomatis dalam {{seconds}} dtk"
     },
     "empty": {
       "desc": "Klik \"Tambah Akun\" untuk menggunakan login auth, import lokal, atau import JSON."

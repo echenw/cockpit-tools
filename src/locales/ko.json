@@ -5780,7 +5780,10 @@
     },
     "qoder": {
       "title": "Qoder 설정",
-      "appPath": "Qoder 경로"
+      "appPathIde": "Qoder IDE 경로",
+      "appPathApp": "Qoder 경로",
+      "appPathCnIde": "Qoder CN IDE 경로",
+      "appPathCnApp": "Qoder CN 경로"
     },
     "trae": {
       "title": "Trae 설정",
@@ -6466,6 +6469,18 @@
   },
   "qoder": {
     "title": "Qoder 계정 관리",
+    "suite": {
+      "sharedAccounts": "같은 지역의 App과 IDE는 계정을 공유합니다. 한 번 인증하거나 가져오면 양쪽에서 사용할 수 있습니다.",
+      "deleteSharedSingle": "이 공유 계정을 같은 지역의 App과 IDE 목록 모두에서 삭제할까요?",
+      "deleteSharedMulti": "공유 계정 {{count}}개를 같은 지역의 App과 IDE 목록 모두에서 삭제할까요?",
+      "tabListLabel": "Qoder 변형",
+      "variants": {
+        "qoder": "Qoder IDE",
+        "qoder_app": "Qoder",
+        "qoder_cn_ide": "Qoder CN IDE",
+        "qoder_cn_app": "Qoder CN"
+      }
+    },
     "comingSoon": {
       "title": "멀티 인스턴스 곧 출시",
       "desc": "다른 계정으로 여러 Qoder.app 인스턴스를 동시에 실행할 수 있습니다."
@@ -6473,11 +6488,13 @@
     "instances": {
       "unsupported": {
         "descPlatform": "Qoder 다중 인스턴스는 macOS, Windows, Linux에서만 지원됩니다."
-      }
+      },
+      "appMultiInstanceUnsupported": "{{variant}} 클라이언트는 다중 실행(멀티 인스턴스)을 지원하지 않습니다. 공식 단일 인스턴스 제한으로 동일 클라이언트에서 여러 로그인 세션을 동시에 실행할 수 없습니다. 계정 전환 기능을 사용하세요."
     },
     "oauth": {
       "hint": "열린 브라우저 페이지에서 로그인을 완료하세요. 로그인 페이지가 자동으로 열리지 않으면 \"로그인 링크 복사\"를 클릭해 링크를 복사한 뒤 브라우저에 붙여 넣어 로그인을 완료하세요.",
-      "copyLoginUrl": "로그인 링크 복사"
+      "copyLoginUrl": "로그인 링크 복사",
+      "accountNotVisible": "인증된 계정이 저장된 계정 목록에 나타나지 않았습니다"
     },
     "usageOverview": {
       "title": "사용량 개요",
@@ -6500,7 +6517,8 @@
     "import": {
       "localDesc": "로컬 Qoder 클라이언트에서 현재 로그인 상태를 읽어옵니다. 사용자 정보, 플랜, 크레딧 사용량이 포함됩니다.",
       "localFailed": "로컬 가져오기 실패: {{error}}",
-      "localSuccess": "로컬 Qoder에서 계정을 가져왔습니다."
+      "localSuccess": "로컬 Qoder에서 계정을 가져왔습니다.",
+      "autoCloseCountdown": "{{seconds}}초 후 자동으로 닫힙니다"
     },
     "empty": {
       "desc": "\"계정 추가\"를 클릭하여 인증 로그인, 로컬 가져오기 또는 JSON 가져오기를 사용하세요."

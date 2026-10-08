@@ -1,3 +1,4 @@
+import { useQoderCurrentAccountIds } from '../hooks/useQoderCurrentAccountIds';
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowDownWideNarrow,
@@ -28,6 +29,7 @@ import { confirm as confirmDialog } from '@tauri-apps/plugin-dialog';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { useTranslation } from 'react-i18next';
 import { TagEditModal } from '../components/TagEditModal';
+import { QoderOfficialLoginSection } from '../components/QoderOfficialLoginSection';
 import { ExportJsonModal } from '../components/ExportJsonModal';
 import { ModalErrorMessage, useModalErrorState } from '../components/ModalErrorMessage';
 import { MfaQuickCodeSelect } from '../components/MfaQuickCodeSelect';
@@ -48,7 +50,10 @@ import { useQoderAccountStore } from '../stores/useQoderAccountStore';
 import * as qoderService from '../services/qoderService';
 import {
   QoderAccount,
+  QODER_VARIANT_DISPLAY_NAMES,
+  QoderVariantId,
   getQoderAccountDisplayEmail,
+  getQoderAccountVariants, qoderAccountSupportsVariant,
   getQoderPlanBadge,
   getQoderSubscriptionInfo,
   getQoderUsage,
@@ -73,6 +78,7 @@ import {
   splitValidityFilterValues,
   VALID_ACCOUNTS_FILTER_VALUE,
 } from '../utils/accountValidityFilter';
+import { emitAccountsChanged } from '../utils/accountSyncEvents';
 import {
   buildPaginatedGroups,
   buildPaginationPageSizeStorageKey,
@@ -91,7 +97,6 @@ import {
 } from '../utils/accountsOverviewFilterPersistence';
 
 const QODER_FLOW_NOTICE_COLLAPSED_KEY = 'agtools.qoder.flow_notice_collapsed';
-const QODER_FILTER_PERSISTENCE_SCOPE = normalizeAccountsOverviewScope('qoder');
 const QODER_FILTER_FIELD_VIEW_MODE = 'view_mode';
 const QODER_FILTER_FIELD_SORT_BY = 'sort_by';
 const QODER_FILTER_FIELD_SORT_DIRECTION = 'sort_direction';
@@ -99,6 +104,13 @@ const QODER_FILTER_FIELD_FILTER_TYPES = 'filter_types';
 const QODER_FILTER_FIELD_TAG_FILTER = 'tag_filter';
 const QODER_FILTER_FIELD_GROUP_BY_TAG = 'group_by_tag';
 const UNTAGGED_KEY = '__untagged__';
+
+async function emitImportedQoderAccountsChanged(accounts: QoderAccount[]): Promise<void> {
+  const variants = [...new Set(accounts.flatMap(getQoderAccountVariants))];
+  await Promise.all(
+    variants.map((platformId) => emitAccountsChanged({ platformId, reason: 'import' })),
+  );
+}
 
 type ViewMode = 'grid' | 'list';
 type SortBy = 'created_at' | 'plan' | 'quota';
@@ -224,6 +236,7 @@ const QODER_OAUTH_PEEK_TIMEOUT_ERROR = 'QODER_OAUTH_PEEK_TIMEOUT';
 const QODER_OAUTH_PEEK_TIMEOUT_MS = 1200;
 const QODER_OAUTH_PEEK_RETRY_MAX = 8;
 const QODER_OAUTH_PEEK_RETRY_INTERVAL_MS = 250;
+const IMPORT_AUTO_CLOSE_SECONDS = 3;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -246,11 +259,14 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutCode: str
   });
 }
 
-export function QoderAccountsPage() {
+export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } = {}) {
   const { t } = useTranslation();
   const store = useQoderAccountStore();
+  const activeVariant = variantId ?? 'qoder';
+  const filterScope = normalizeAccountsOverviewScope(activeVariant);
+  const currentIds = useQoderCurrentAccountIds(store.accounts);
   const initialFilterPersistenceEnabled =
-    readAccountsOverviewFilterPersistenceEnabled(QODER_FILTER_PERSISTENCE_SCOPE);
+    readAccountsOverviewFilterPersistenceEnabled(filterScope);
   const importFileInputRef = useRef<HTMLInputElement | null>(null);
   const [activeTab, setActiveTab] = useState<PlatformOverviewTab>('overview');
   const [filterPersistenceEnabled, setFilterPersistenceEnabled] = useState<boolean>(
@@ -260,7 +276,7 @@ export function QoderAccountsPage() {
     initialFilterPersistenceEnabled
       ? normalizeQoderViewMode(
           readAccountsOverviewFilterField<unknown>(
-            QODER_FILTER_PERSISTENCE_SCOPE,
+            filterScope,
             QODER_FILTER_FIELD_VIEW_MODE,
             'grid',
           ),
@@ -271,7 +287,7 @@ export function QoderAccountsPage() {
   const [filterTypes, setFilterTypes] = useState<string[]>(() =>
     initialFilterPersistenceEnabled
       ? readAccountsOverviewFilterStringArray(
-          QODER_FILTER_PERSISTENCE_SCOPE,
+          filterScope,
           QODER_FILTER_FIELD_FILTER_TYPES,
         )
       : [],
@@ -280,7 +296,7 @@ export function QoderAccountsPage() {
     initialFilterPersistenceEnabled
       ? normalizeQoderSortBy(
           readAccountsOverviewFilterField<unknown>(
-            QODER_FILTER_PERSISTENCE_SCOPE,
+            filterScope,
             QODER_FILTER_FIELD_SORT_BY,
             'created_at',
           ),
@@ -291,7 +307,7 @@ export function QoderAccountsPage() {
     initialFilterPersistenceEnabled
       ? normalizeQoderSortDirection(
           readAccountsOverviewFilterField<unknown>(
-            QODER_FILTER_PERSISTENCE_SCOPE,
+            filterScope,
             QODER_FILTER_FIELD_SORT_DIRECTION,
             'desc',
           ),
@@ -299,11 +315,10 @@ export function QoderAccountsPage() {
       : 'desc',
   );
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const grouping = usePlatformAccountGroups('qoder', () => setSelected(new Set()));
+  const grouping = usePlatformAccountGroups(activeVariant, () => setSelected(new Set()));
   const [showAddModal, setShowAddModal] = useState(false);
-  const [addTab, setAddTab] = useState<'oauth' | 'token' | 'import'>('import');
+  const [addTab, setAddTab] = useState<'oauth' | 'official' | 'token' | 'import'>('official');
 
-  useEscClose(showAddModal, () => setShowAddModal(false));
   const [addStatus, setAddStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [addMessage, setAddMessage] = useState<string | null>(null);
   const [tokenInput, setTokenInput] = useState('');
@@ -313,6 +328,10 @@ export function QoderAccountsPage() {
   const [oauthCompleting, setOauthCompleting] = useState(false);
   const [oauthError, setOauthError] = useState<string | null>(null);
   const [oauthUrlCopied, setOauthUrlCopied] = useState(false);
+  const [importAutoCloseSeconds, setImportAutoCloseSeconds] = useState<number | null>(null);
+  const importAutoCloseTimerRef = useRef<number | null>(null);
+  // 旧导入仍可刷新账号列表，但不能修改切换标签或重新打开后的弹窗。
+  const importAttemptSeqRef = useRef(0);
   const oauthSessionRef = useRef<string | null>(null);
   const oauthCompletingLoginIdRef = useRef<string | null>(null);
   const oauthAttemptSeqRef = useRef(0);
@@ -327,7 +346,7 @@ export function QoderAccountsPage() {
   const [tagFilter, setTagFilter] = useState<string[]>(() =>
     initialFilterPersistenceEnabled
       ? readAccountsOverviewFilterStringArray(
-          QODER_FILTER_PERSISTENCE_SCOPE,
+          filterScope,
           QODER_FILTER_FIELD_TAG_FILTER,
         )
       : [],
@@ -344,7 +363,7 @@ export function QoderAccountsPage() {
     initialFilterPersistenceEnabled
       ? Boolean(
           readAccountsOverviewFilterField<unknown>(
-            QODER_FILTER_PERSISTENCE_SCOPE,
+            filterScope,
             QODER_FILTER_FIELD_GROUP_BY_TAG,
             false,
           ),
@@ -361,7 +380,7 @@ export function QoderAccountsPage() {
   useEffect(() => {
     const handleFilterPersistenceChanged = (event: Event) => {
       const detail = (event as CustomEvent<AccountsOverviewFilterPersistenceChangedDetail>).detail;
-      if (!detail || detail.scope !== QODER_FILTER_PERSISTENCE_SCOPE) {
+      if (!detail || detail.scope !== filterScope) {
         return;
       }
       setFilterPersistenceEnabled(Boolean(detail.enabled));
@@ -376,97 +395,97 @@ export function QoderAccountsPage() {
         handleFilterPersistenceChanged as EventListener,
       );
     };
-  }, []);
+  }, [filterScope]);
 
   useEffect(() => {
     if (!filterPersistenceEnabled) {
       removeAccountsOverviewFilterField(
-        QODER_FILTER_PERSISTENCE_SCOPE,
+        filterScope,
         QODER_FILTER_FIELD_VIEW_MODE,
       );
       return;
     }
     writeAccountsOverviewFilterField(
-      QODER_FILTER_PERSISTENCE_SCOPE,
+      filterScope,
       QODER_FILTER_FIELD_VIEW_MODE,
       viewMode,
     );
-  }, [filterPersistenceEnabled, viewMode]);
+  }, [filterPersistenceEnabled, filterScope, viewMode]);
 
   useEffect(() => {
     if (!filterPersistenceEnabled) {
       removeAccountsOverviewFilterField(
-        QODER_FILTER_PERSISTENCE_SCOPE,
+        filterScope,
         QODER_FILTER_FIELD_SORT_BY,
       );
       return;
     }
     writeAccountsOverviewFilterField(
-      QODER_FILTER_PERSISTENCE_SCOPE,
+      filterScope,
       QODER_FILTER_FIELD_SORT_BY,
       sortBy,
     );
-  }, [filterPersistenceEnabled, sortBy]);
+  }, [filterPersistenceEnabled, filterScope, sortBy]);
 
   useEffect(() => {
     if (!filterPersistenceEnabled) {
       removeAccountsOverviewFilterField(
-        QODER_FILTER_PERSISTENCE_SCOPE,
+        filterScope,
         QODER_FILTER_FIELD_SORT_DIRECTION,
       );
       return;
     }
     writeAccountsOverviewFilterField(
-      QODER_FILTER_PERSISTENCE_SCOPE,
+      filterScope,
       QODER_FILTER_FIELD_SORT_DIRECTION,
       sortDirection,
     );
-  }, [filterPersistenceEnabled, sortDirection]);
+  }, [filterPersistenceEnabled, filterScope, sortDirection]);
 
   useEffect(() => {
     if (!filterPersistenceEnabled) {
       removeAccountsOverviewFilterField(
-        QODER_FILTER_PERSISTENCE_SCOPE,
+        filterScope,
         QODER_FILTER_FIELD_FILTER_TYPES,
       );
       return;
     }
     writeAccountsOverviewFilterField(
-      QODER_FILTER_PERSISTENCE_SCOPE,
+      filterScope,
       QODER_FILTER_FIELD_FILTER_TYPES,
       filterTypes,
     );
-  }, [filterPersistenceEnabled, filterTypes]);
+  }, [filterPersistenceEnabled, filterScope, filterTypes]);
 
   useEffect(() => {
     if (!filterPersistenceEnabled) {
       removeAccountsOverviewFilterField(
-        QODER_FILTER_PERSISTENCE_SCOPE,
+        filterScope,
         QODER_FILTER_FIELD_TAG_FILTER,
       );
       return;
     }
     writeAccountsOverviewFilterField(
-      QODER_FILTER_PERSISTENCE_SCOPE,
+      filterScope,
       QODER_FILTER_FIELD_TAG_FILTER,
       tagFilter,
     );
-  }, [filterPersistenceEnabled, tagFilter]);
+  }, [filterPersistenceEnabled, filterScope, tagFilter]);
 
   useEffect(() => {
     if (!filterPersistenceEnabled) {
       removeAccountsOverviewFilterField(
-        QODER_FILTER_PERSISTENCE_SCOPE,
+        filterScope,
         QODER_FILTER_FIELD_GROUP_BY_TAG,
       );
       return;
     }
     writeAccountsOverviewFilterField(
-      QODER_FILTER_PERSISTENCE_SCOPE,
+      filterScope,
       QODER_FILTER_FIELD_GROUP_BY_TAG,
       groupByTag,
     );
-  }, [filterPersistenceEnabled, groupByTag]);
+  }, [filterPersistenceEnabled, filterScope, groupByTag]);
 
   useEffect(() => {
     if (!store.error) return;
@@ -501,9 +520,11 @@ export function QoderAccountsPage() {
     setFilterTypes([]);
   }, []);
 
-  const accounts = store.accounts;
+  const accounts = useMemo(
+    () => store.accounts.filter((account) => qoderAccountSupportsVariant(account, activeVariant)),
+    [activeVariant, store.accounts],
+  );
   const loading = store.loading;
-  const fetchAccounts = store.fetchAccounts;
 
   const exportModal = useExportJsonModal({
     exportFilePrefix: 'qoder_accounts',
@@ -536,19 +557,41 @@ export function QoderAccountsPage() {
     setOauthUrlCopied(false);
   }, []);
 
-  const openAddModal = useCallback((tab: 'oauth' | 'token' | 'import' = 'oauth') => {
-    setAddTab(tab);
-    setShowAddModal(true);
+  const cancelImportAutoClose = useCallback(() => {
+    if (importAutoCloseTimerRef.current !== null) {
+      window.clearInterval(importAutoCloseTimerRef.current);
+      importAutoCloseTimerRef.current = null;
+    }
+    setImportAutoCloseSeconds(null);
   }, []);
 
+  const closeAddModal = useCallback(() => {
+    importAttemptSeqRef.current += 1;
+    cancelImportAutoClose();
+    setShowAddModal(false);
+  }, [cancelImportAutoClose]);
+
+  useEscClose(showAddModal, closeAddModal);
+
+  const openAddModal = useCallback((tab: 'oauth' | 'official' | 'token' | 'import' = 'official') => {
+    if (!showAddModal || tab !== addTab) {
+      importAttemptSeqRef.current += 1;
+      cancelImportAutoClose();
+      setAddStatus('idle');
+      setAddMessage(null);
+    }
+    setAddTab(tab);
+    setShowAddModal(true);
+  }, [addTab, cancelImportAutoClose, showAddModal]);
+
   const consumeExternalProviderImport = useCallback(() => {
-    const request = consumeQueuedExternalProviderImportForPlatform('qoder');
+    const request = consumeQueuedExternalProviderImportForPlatform(activeVariant);
     if (!request) return;
     openAddModal('token');
     setTokenInput(request.token);
     setAddStatus('idle');
     setAddMessage(null);
-  }, [openAddModal]);
+  }, [activeVariant, openAddModal]);
 
   useEffect(() => {
     const handleExternalImportEvent = () => {
@@ -577,12 +620,24 @@ export function QoderAccountsPage() {
     };
   }, [syncPrivacyMode]);
 
-  useEffect(() => {
-    void fetchAccounts();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
-  const currentAccountId = store.currentAccountId;
+  const currentAccountId = currentIds[activeVariant];
+
+  const startImportAutoClose = useCallback((seconds = IMPORT_AUTO_CLOSE_SECONDS) => {
+    cancelImportAutoClose();
+    setImportAutoCloseSeconds(seconds);
+    importAutoCloseTimerRef.current = window.setInterval(() => {
+      setImportAutoCloseSeconds((prev) => {
+        if (prev === null || prev <= 0) return prev;
+        const next = prev - 1;
+        if (next === 0 && importAutoCloseTimerRef.current !== null) {
+          window.clearInterval(importAutoCloseTimerRef.current);
+          importAutoCloseTimerRef.current = null;
+        }
+        return next;
+      });
+    }, 1000);
+  }, [cancelImportAutoClose]);
 
   useEffect(() => {
     if (!showAddModal) {
@@ -590,15 +645,33 @@ export function QoderAccountsPage() {
       const loginId = oauthSessionRef.current ?? oauthLoginId ?? undefined;
       if (loginId) {
         logQoderOauthUi('session:cancel-on-modal-close', { loginId });
-        void qoderService.qoderOauthLoginCancel(loginId).catch(() => {});
+        void qoderService.qoderOauthLoginCancel(loginId, activeVariant).catch(() => {});
       }
       setAddStatus('idle');
       setAddMessage(null);
       setAddTab('import');
       setTokenInput('');
       resetOauthState();
+      cancelImportAutoClose();
     }
-  }, [oauthLoginId, resetOauthState, showAddModal]);
+  }, [activeVariant, cancelImportAutoClose, oauthLoginId, resetOauthState, showAddModal]);
+
+  useEffect(() => {
+    if (importAutoCloseSeconds === 0) {
+      closeAddModal();
+    }
+  }, [closeAddModal, importAutoCloseSeconds]);
+
+  useEffect(
+    () => () => {
+      importAttemptSeqRef.current += 1;
+      if (importAutoCloseTimerRef.current !== null) {
+        window.clearInterval(importAutoCloseTimerRef.current);
+        importAutoCloseTimerRef.current = null;
+      }
+    },
+    [activeVariant],
+  );
 
   useEffect(() => {
     if (!showAddModal || addTab === 'oauth') return;
@@ -606,10 +679,10 @@ export function QoderAccountsPage() {
     const loginId = oauthSessionRef.current ?? oauthLoginId ?? undefined;
     if (loginId) {
       logQoderOauthUi('session:cancel-on-tab-change', { loginId, addTab });
-      void qoderService.qoderOauthLoginCancel(loginId).catch(() => {});
+      void qoderService.qoderOauthLoginCancel(loginId, activeVariant).catch(() => {});
     }
     resetOauthState();
-  }, [addTab, oauthLoginId, resetOauthState, showAddModal]);
+  }, [activeVariant, addTab, oauthLoginId, resetOauthState, showAddModal]);
 
   useEffect(
     () => () => {
@@ -617,12 +690,14 @@ export function QoderAccountsPage() {
       const loginId = oauthSessionRef.current ?? undefined;
       if (loginId) {
         logQoderOauthUi('session:cancel-on-unmount', { loginId });
-        void qoderService.qoderOauthLoginCancel(loginId).catch(() => {});
+        void qoderService
+          .qoderOauthLoginCancel(loginId, activeVariant)
+          .catch(() => {});
       }
       oauthSessionRef.current = null;
       oauthCompletingLoginIdRef.current = null;
     },
-    [],
+    [activeVariant],
   );
 
   useEffect(() => {
@@ -846,7 +921,11 @@ export function QoderAccountsPage() {
       if (refreshing === accountId) return;
       setRefreshing(accountId);
       try {
-        await store.refreshToken(accountId);
+        try {
+          await qoderService.refreshQoderToken(accountId, activeVariant);
+        } finally {
+          await store.fetchAccounts();
+        }
         setMessage({ text: t('accounts.refreshSuccess', '刷新成功') });
       } catch (error) {
         setMessage({
@@ -857,14 +936,18 @@ export function QoderAccountsPage() {
         setRefreshing(null);
       }
     },
-    [refreshing, store, t],
+    [activeVariant, refreshing, store, t],
   );
 
   const handleRefreshAll = useCallback(async () => {
     if (refreshingAll) return;
     setRefreshingAll(true);
     try {
-      await store.refreshAllTokens();
+      try {
+        await qoderService.refreshAllQoderTokens(activeVariant);
+      } finally {
+        await store.fetchAccounts();
+      }
       setMessage({ text: t('accounts.refreshAllSuccess', '已刷新全部账号') });
     } catch (error) {
       setMessage({
@@ -874,14 +957,14 @@ export function QoderAccountsPage() {
     } finally {
       setRefreshingAll(false);
     }
-  }, [refreshingAll, store, t]);
+  }, [activeVariant, refreshingAll, store, t]);
 
   const handleSwitch = useCallback(
     async (accountId: string) => {
       if (injecting === accountId) return;
       setInjecting(accountId);
       try {
-        await store.switchAccount(accountId);
+        await store.switchAccount(accountId, activeVariant);
         setMessage({ text: t('accounts.switchSuccess', '切换成功') });
       } catch (error) {
         setMessage({
@@ -892,7 +975,7 @@ export function QoderAccountsPage() {
         setInjecting(null);
       }
     },
-    [injecting, store, t],
+    [activeVariant, injecting, store, t],
   );
 
   const handleDeleteAccounts = useCallback(
@@ -900,8 +983,8 @@ export function QoderAccountsPage() {
       if (ids.length === 0 || deleting) return;
       const confirmed = await confirmDialog(
         ids.length === 1
-          ? t('accounts.deleteConfirm.single', '确认删除该账号？')
-          : t('accounts.deleteConfirm.multi', '确认删除选中的 {{count}} 个账号？', { count: ids.length }),
+          ? t('qoder.suite.deleteSharedSingle', '确认删除该共享账号？将同时从同地区的 App 和 IDE 列表移除。')
+          : t('qoder.suite.deleteSharedMulti', '确认删除选中的 {{count}} 个共享账号？将同时从同地区的 App 和 IDE 列表移除。', { count: ids.length }),
         {
           title: t('common.appName', 'Cockpit Tools'),
           kind: 'warning',
@@ -1008,38 +1091,51 @@ export function QoderAccountsPage() {
 
   const handleImportLocal = useCallback(async () => {
     if (addStatus === 'loading') return;
+    const attemptSeq = ++importAttemptSeqRef.current;
     setAddStatus('loading');
     setAddMessage(null);
+    cancelImportAutoClose();
     try {
-      await qoderService.importQoderFromLocal();
+      const imported = await qoderService.importQoderFromLocal(activeVariant);
       await store.fetchAccounts();
+      await emitImportedQoderAccountsChanged(imported);
       await new Promise((resolve) => setTimeout(resolve, 180));
       await store.fetchAccounts();
+      if (attemptSeq !== importAttemptSeqRef.current) return;
       setAddStatus('success');
       setAddMessage(t('qoder.import.localSuccess', '已从本机 Qoder 导入账号。'));
+      startImportAutoClose();
     } catch (error) {
+      if (attemptSeq !== importAttemptSeqRef.current) return;
       setAddStatus('error');
       setAddMessage(t('qoder.import.localFailed', '本机导入失败：{{error}}', { error: String(error) }));
     }
-  }, [addStatus, store, t]);
+  }, [activeVariant, addStatus, cancelImportAutoClose, startImportAutoClose, store, t]);
 
   const handleImportJsonFile = useCallback(
     async (file: File) => {
       if (addStatus === 'loading') return;
+      const attemptSeq = ++importAttemptSeqRef.current;
       setAddStatus('loading');
       setAddMessage(null);
+      cancelImportAutoClose();
       try {
         const content = await file.text();
-        await store.importFromJson(content);
+        if (attemptSeq !== importAttemptSeqRef.current) return;
+        const imported = await qoderService.importQoderFromJson(content, activeVariant);
         await store.fetchAccounts();
+        await emitImportedQoderAccountsChanged(imported);
+        if (attemptSeq !== importAttemptSeqRef.current) return;
         setAddStatus('success');
         setAddMessage(t('accounts.importJsonSuccess', 'JSON 导入成功'));
+        startImportAutoClose();
       } catch (error) {
+        if (attemptSeq !== importAttemptSeqRef.current) return;
         setAddStatus('error');
         setAddMessage(t('accounts.importJsonFailed', 'JSON 导入失败：{{error}}', { error: String(error) }));
       }
     },
-    [addStatus, store, t],
+    [activeVariant, addStatus, cancelImportAutoClose, startImportAutoClose, store, t],
   );
 
   const handleTokenImport = useCallback(async () => {
@@ -1050,18 +1146,24 @@ export function QoderAccountsPage() {
       setAddMessage(t('common.shared.token.empty', '请输入 Token 或 JSON'));
       return;
     }
+    const attemptSeq = ++importAttemptSeqRef.current;
     setAddStatus('loading');
     setAddMessage(null);
+    cancelImportAutoClose();
     try {
-      const imported = await store.importFromJson(payload);
+      const imported = await qoderService.importQoderFromJson(payload, activeVariant);
       await store.fetchAccounts();
+      await emitImportedQoderAccountsChanged(imported);
+      if (attemptSeq !== importAttemptSeqRef.current) return;
       setAddStatus('success');
       setAddMessage(
         t('common.shared.token.importSuccessMsg', '成功导入 {{count}} 个账号', {
           count: imported.length,
         }),
       );
+      startImportAutoClose();
     } catch (error) {
+      if (attemptSeq !== importAttemptSeqRef.current) return;
       setAddStatus('error');
       setAddMessage(
         t('common.shared.token.importFailedMsg', '导入失败: {{error}}', {
@@ -1069,7 +1171,7 @@ export function QoderAccountsPage() {
         }),
       );
     }
-  }, [addStatus, store, t, tokenInput]);
+  }, [activeVariant, addStatus, cancelImportAutoClose, startImportAutoClose, store, t, tokenInput]);
 
   const handlePrepareOauth = useCallback(async () => {
     if (oauthPreparing || oauthCompleting) return;
@@ -1083,7 +1185,7 @@ export function QoderAccountsPage() {
     const previousLoginId = oauthSessionRef.current ?? oauthLoginId ?? undefined;
     if (previousLoginId) {
       logQoderOauthUi('prepare:cancel-previous', { loginId: previousLoginId });
-      await qoderService.qoderOauthLoginCancel(previousLoginId).catch(() => {});
+      await qoderService.qoderOauthLoginCancel(previousLoginId, activeVariant).catch(() => {});
     }
 
     oauthSessionRef.current = null;
@@ -1102,28 +1204,36 @@ export function QoderAccountsPage() {
         oauthCompletingLoginIdRef.current = loginId;
         setOauthCompleting(true);
         void qoderService
-          .qoderOauthLoginComplete(loginId)
+          .qoderOauthLoginComplete(loginId, activeVariant)
           .then(async (completedAccount) => {
             logQoderOauthUi('complete:resolved', { loginId });
             if (attemptSeq !== oauthAttemptSeqRef.current) return;
             if (oauthSessionRef.current !== loginId) return;
 
-            // fetchAccounts 将列表读取异常写入 store.error 而不会 reject。
-            // 授权完成必须以“新账号已在列表中可见”为准，避免出现绿色成功但账号未加载的假成功状态。
+            // 通用 store 在列表读取失败时可能保留旧缓存；必须先核对后端列表，
+            // 再确认目标变体页面已加载这次完成的账号 ID。
+            const isCompletedAccount = (account: QoderAccount) =>
+              account.id === completedAccount.id && qoderAccountSupportsVariant(account, activeVariant);
             let accountVisible = false;
             let listError: string | null = null;
             for (let attempt = 0; attempt < 3; attempt += 1) {
-              await store.fetchAccounts();
-              const state = useQoderAccountStore.getState();
-              listError = state.error;
-              accountVisible = state.accounts.some(
-                (account) =>
-                  account.id === completedAccount.id ||
-                  (completedAccount.email && account.email === completedAccount.email),
-              );
+              try {
+                const persistedAccounts = await qoderService.listQoderAccounts();
+                if (persistedAccounts.some(isCompletedAccount)) {
+                  await store.fetchAccounts();
+                  const state = useQoderAccountStore.getState();
+                  listError = state.error;
+                  accountVisible = !listError && state.accounts.some(isCompletedAccount);
+                } else {
+                  listError = t('qoder.oauth.accountNotVisible', '授权账号未出现在后端列表中');
+                }
+              } catch (error) {
+                listError = String(error);
+              }
               if (accountVisible) break;
               if (attempt < 2) await delay(150);
             }
+            if (attemptSeq !== oauthAttemptSeqRef.current || oauthSessionRef.current !== loginId) return;
             if (!accountVisible) {
               logQoderOauthUi('complete:account-not-visible-after-refresh', {
                 loginId,
@@ -1145,7 +1255,7 @@ export function QoderAccountsPage() {
             oauthSessionRef.current = null;
             oauthCompletingLoginIdRef.current = null;
             setOauthLoginId(null);
-            setShowAddModal(false);
+            closeAddModal();
           })
           .catch((error) => {
             logQoderOauthUi('complete:rejected', {
@@ -1167,12 +1277,12 @@ export function QoderAccountsPage() {
       try {
         logQoderOauthUi('prepare:invoke-start', { timeoutMs: QODER_OAUTH_START_TIMEOUT_MS });
         response = await withTimeout(
-          qoderService.qoderOauthLoginStart(),
+          qoderService.qoderOauthLoginStart(activeVariant),
           QODER_OAUTH_START_TIMEOUT_MS,
           QODER_OAUTH_START_TIMEOUT_ERROR,
         );
         if (attemptSeq !== oauthAttemptSeqRef.current) {
-          void qoderService.qoderOauthLoginCancel(response.loginId).catch(() => {});
+          void qoderService.qoderOauthLoginCancel(response.loginId, activeVariant).catch(() => {});
           logQoderOauthUi('prepare:start-stale-after-start', {
             loginId: response.loginId,
             attemptSeq,
@@ -1202,7 +1312,7 @@ export function QoderAccountsPage() {
         for (let attempt = 1; attempt <= QODER_OAUTH_PEEK_RETRY_MAX; attempt += 1) {
           if (attemptSeq !== oauthAttemptSeqRef.current) return;
           const pending = await withTimeout(
-            qoderService.qoderOauthLoginPeek(),
+            qoderService.qoderOauthLoginPeek(activeVariant),
             QODER_OAUTH_PEEK_TIMEOUT_MS,
             QODER_OAUTH_PEEK_TIMEOUT_ERROR,
           ).catch((peekError) => {
@@ -1216,7 +1326,7 @@ export function QoderAccountsPage() {
           });
           if (attemptSeq !== oauthAttemptSeqRef.current) {
             if (pending?.loginId) {
-              void qoderService.qoderOauthLoginCancel(pending.loginId).catch(() => {});
+              void qoderService.qoderOauthLoginCancel(pending.loginId, activeVariant).catch(() => {});
             }
             return;
           }
@@ -1239,7 +1349,7 @@ export function QoderAccountsPage() {
       }
 
       if (attemptSeq !== oauthAttemptSeqRef.current) {
-        void qoderService.qoderOauthLoginCancel(response.loginId).catch(() => {});
+        void qoderService.qoderOauthLoginCancel(response.loginId, activeVariant).catch(() => {});
         logQoderOauthUi('prepare:start-stale-before-apply', {
           loginId: response.loginId,
           attemptSeq,
@@ -1283,7 +1393,7 @@ export function QoderAccountsPage() {
       setAddStatus('error');
       setAddMessage(t('common.shared.oauth.failed', '授权失败') + ': ' + msg);
     }
-  }, [oauthCompleting, oauthLoginId, oauthPreparing, store, t]);
+  }, [activeVariant, closeAddModal, oauthCompleting, oauthLoginId, oauthPreparing, store, t]);
 
   // Keep a stable ref to avoid putting handlePrepareOauth in useEffect deps
   handlePrepareOauthRef.current = handlePrepareOauth;
@@ -1318,7 +1428,7 @@ export function QoderAccountsPage() {
     if (oauthUrl || oauthPreparing || oauthCompleting) return;
     logQoderOauthUi('effect:auto-prepare-fire');
     void handlePrepareOauthRef.current?.();
-  }, [addTab, oauthCompleting, oauthPreparing, oauthUrl, showAddModal]);
+  }, [activeVariant, addTab, oauthLoginId, oauthPreparing, oauthUrl, showAddModal]);
 
   useEffect(() => {
     if (!showAddModal || addTab !== 'oauth') return;
@@ -1326,7 +1436,7 @@ export function QoderAccountsPage() {
 
     let cancelled = false;
     const adoptPendingSession = async () => {
-      const pending = await qoderService.qoderOauthLoginPeek().catch(() => null);
+      const pending = await qoderService.qoderOauthLoginPeek(activeVariant).catch(() => null);
       if (cancelled || !pending?.loginId) return;
       const verificationUri =
         pending.verificationUri ||
@@ -1354,7 +1464,7 @@ export function QoderAccountsPage() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [addTab, oauthLoginId, oauthPreparing, oauthUrl, showAddModal]);
+  }, [activeVariant, addTab, oauthLoginId, oauthPreparing, oauthUrl, showAddModal]);
 
   const handlePickImportFile = useCallback(() => {
     importFileInputRef.current?.click();
@@ -1902,10 +2012,28 @@ export function QoderAccountsPage() {
 
   return (
     <div className="ghcp-accounts-page qoder-accounts-page">
-      <PlatformOverviewTabsHeader platform="qoder" active={activeTab} onTabChange={setActiveTab} />
+      <PlatformOverviewTabsHeader
+        platform={activeVariant}
+        active={activeTab}
+        onTabChange={setActiveTab}
+      />
 
       {activeTab === 'instances' ? (
-        <QoderInstancesContent accountsForSelect={filteredAccounts} />
+        activeVariant === 'qoder' || activeVariant === 'qoder_cn_ide' ? (
+          <QoderInstancesContent variantId={activeVariant} accountsForSelect={filteredAccounts} />
+        ) : (
+          <div className="ghcp-flow-notice" role="note">
+            <div className="ghcp-flow-notice-body">
+              <div className="ghcp-flow-notice-desc">
+                {t(
+                  'qoder.instances.appMultiInstanceUnsupported',
+                  '{{variant}} 客户端不支持应用多开：官方单实例机制限制，同一客户端无法同时运行多个登录态；可使用账号切换功能更换账号。',
+                  { variant: QODER_VARIANT_DISPLAY_NAMES[activeVariant] },
+                )}
+              </div>
+            </div>
+          </div>
+        )
       ) : (
         <>
           <div className={`ghcp-flow-notice ${isFlowNoticeCollapsed ? 'collapsed' : ''}`} role="note" aria-live="polite">
@@ -2081,7 +2209,7 @@ export function QoderAccountsPage() {
             <div className="toolbar-right">
               <button
                 className="btn btn-primary icon-only"
-                onClick={() => openAddModal('oauth')}
+                onClick={() => openAddModal('official')}
                 title={t('common.shared.addAccount')}
               >
                 <Plus size={14} />
@@ -2124,7 +2252,7 @@ export function QoderAccountsPage() {
               >
                 <Upload size={14} />
               </button>
-              <QuickSettingsPopover type="qoder" />
+              <QuickSettingsPopover type={activeVariant} />
             </div>
           </div>
 
@@ -2163,7 +2291,7 @@ export function QoderAccountsPage() {
               <p>{t('qoder.empty.desc', '点击“添加账号”，可使用授权登录、本机导入或 JSON 导入。')}</p>
               <button
                 className="btn btn-primary"
-                onClick={() => openAddModal('oauth')}
+                onClick={() => openAddModal('official')}
               >
                 <Plus size={16} />
                 {t('common.shared.addAccount')}
@@ -2200,13 +2328,20 @@ export function QoderAccountsPage() {
         <div className="modal-overlay">
           <div className="modal-content codex-add-modal platform-account-add-modal" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
-              <button className="btn btn-secondary icon-only" onClick={() => setShowAddModal(false)} title={t('common.back', '返回')} aria-label={t('common.back', '返回')}><ChevronLeft size={14} /></button>
+              <button className="btn btn-secondary icon-only" onClick={closeAddModal} title={t('common.back', '返回')} aria-label={t('common.back', '返回')}><ChevronLeft size={14} /></button>
               <h2>{t('qoder.addModal.title')}</h2>
-              <button className="modal-close" onClick={() => setShowAddModal(false)} aria-label={t('common.close', '关闭')}>
+              <button className="modal-close" onClick={closeAddModal} aria-label={t('common.close', '关闭')}>
                 <X />
               </button>
             </div>
             <div className="modal-tabs">
+              <button
+                className={`modal-tab ${addTab === 'official' ? 'active' : ''}`}
+                onClick={() => openAddModal('official')}
+              >
+                <Play size={14} />
+                {t('qoder.officialLogin.tab', '官方客户端登录')}
+              </button>
               <button
                 className={`modal-tab ${addTab === 'oauth' ? 'active' : ''}`}
                 onClick={() => openAddModal('oauth')}
@@ -2231,7 +2366,22 @@ export function QoderAccountsPage() {
             </div>
             <div className="modal-body">
               <MfaQuickCodeSelect />
-              {addTab === 'oauth' ? (
+              <p className="section-desc">{t('qoder.suite.sharedAccounts', '同地区的 App 与 IDE 共用账号，授权或导入一次，两端都可使用。')}</p>
+              {addTab === 'official' ? (
+                <QoderOfficialLoginSection
+                  key={activeVariant}
+                  variant={activeVariant}
+                  onStarted={cancelImportAutoClose}
+                  onCompleted={() => startImportAutoClose(1)}
+                  onImported={async (accountId) => {
+                    await store.fetchAccounts();
+                    const latest = useQoderAccountStore.getState();
+                    if (latest.error || !latest.accounts.some((account) => account.id === accountId)) {
+                      throw new Error('Imported Qoder account list refresh failed');
+                    }
+                  }}
+                />
+              ) : addTab === 'oauth' ? (
                 <div className="add-section">
                   <p className="section-desc">
                     {t('qoder.oauth.hint', '点击下方按钮，在浏览器中完成 Qoder 账号 OAuth 授权。')}
@@ -2320,7 +2470,7 @@ export function QoderAccountsPage() {
                 </div>
               )}
 
-              {addStatus !== 'idle' && addMessage && (
+              {addTab !== 'official' && addStatus !== 'idle' && addMessage && (
                 <div className={`add-status ${addStatus}`}>
                   {addStatus === 'success' ? (
                     <Check size={16} />
@@ -2331,6 +2481,14 @@ export function QoderAccountsPage() {
                   )}
                   <span>{addMessage}</span>
                 </div>
+              )}
+
+              {(addTab === 'official' || addStatus === 'success') && importAutoCloseSeconds !== null && importAutoCloseSeconds > 0 && (
+                <p className="oauth-hint" style={{ margin: '8px 0 0' }}>
+                  {t('qoder.import.autoCloseCountdown', '{{seconds}} 秒后自动关闭弹窗', {
+                    seconds: importAutoCloseSeconds,
+                  })}
+                </p>
               )}
             </div>
           </div>

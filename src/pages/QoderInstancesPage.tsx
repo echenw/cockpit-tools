@@ -1,8 +1,8 @@
 import { useTranslation } from 'react-i18next';
 import { PlatformInstancesContent } from '../components/platform/PlatformInstancesContent';
-import { useQoderInstanceStore } from '../stores/useQoderInstanceStore';
+import { QODER_INSTANCE_STORES } from '../stores/useQoderInstanceStore';
 import { useQoderAccountStore } from '../stores/useQoderAccountStore';
-import type { QoderAccount } from '../types/qoder';
+import type { QoderAccount, QoderInstanceVariantId } from '../types/qoder';
 import {
   getQoderAccountDisplayEmail,
   getQoderPlanBadge,
@@ -11,14 +11,16 @@ import {
 import { usePlatformRuntimeSupport } from '../hooks/usePlatformRuntimeSupport';
 
 interface QoderInstancesContentProps {
+  variantId?: QoderInstanceVariantId;
   accountsForSelect?: QoderAccount[];
 }
 
 export function QoderInstancesContent({
+  variantId = 'qoder',
   accountsForSelect,
 }: QoderInstancesContentProps = {}) {
   const { t } = useTranslation();
-  const instanceStore = useQoderInstanceStore();
+  const instanceStore = QODER_INSTANCE_STORES[variantId]();
   const { accounts: storeAccounts, fetchAccounts } = useQoderAccountStore();
   const accounts = accountsForSelect ?? storeAccounts;
   const isSupportedPlatform = usePlatformRuntimeSupport('desktop');
@@ -64,7 +66,7 @@ export function QoderInstancesContent({
       getAccountSearchText={(account) =>
         `${getQoderAccountDisplayEmail(account)} ${getQoderPlanBadge(account)}`
       }
-      appType="qoder"
+      appType={variantId}
       isSupported={isSupportedPlatform}
       unsupportedTitleKey="common.shared.instances.unsupported.title"
       unsupportedTitleDefault="暂不支持当前系统"

@@ -6105,7 +6105,10 @@
     },
     "qoder": {
       "title": "Qoder 设置",
-      "appPath": "Qoder 路径"
+      "appPathIde": "Qoder IDE 路径",
+      "appPathApp": "Qoder 路径",
+      "appPathCnIde": "Qoder CN IDE 路径",
+      "appPathCnApp": "Qoder CN 路径"
     },
     "zcode": {
       "title": "ZCode 设置",
@@ -6685,7 +6688,41 @@
     }
   },
   "qoder": {
+    "officialLogin": {
+      "tab": "官方客户端登录",
+      "desc": "由官方客户端生成授权地址并完成登录，Cockpit 在凭据落盘后自动导入账号。",
+      "appHint": "将关闭当前 App，保存旧账号并备份登录态，再打开未登录的官方 App。请在 App 内点击登录，由 App 打开授权页。新账号会保留在客户端；取消只停止等待，不恢复旧登录态。",
+      "appStart": "打开官方 App 登录页",
+      "ideHint": "将打开临时空白实例。登录完成后自动关闭并清理临时实例，不改变默认实例的当前账号。",
+      "start": "打开官方客户端并登录",
+      "timeout": "最长等待 10 分钟；关闭弹窗或切换标签会取消本次等待。",
+      "refreshFailed": "账号已导入，但列表刷新失败，请手动刷新。",
+      "phases": {
+        "preparing": "正在准备官方登录…",
+        "signing-out": "正在保存旧账号并准备客户端登录页…",
+        "launching": "正在打开官方客户端…",
+        "waiting-login": "请在官方客户端完成登录…",
+        "importing": "正在导入账号…",
+        "cleaning": "正在关闭并清理临时实例…",
+        "cancelling": "正在取消…",
+        "completed": "账号已导入",
+        "failed": "官方客户端登录失败",
+        "cancelled": "已取消登录等待"
+      }
+    },
     "title": "Qoder 账号管理",
+    "suite": {
+      "sharedAccounts": "同地区的 App 与 IDE 共用账号，授权或导入一次，两端都可使用。",
+      "deleteSharedSingle": "确认删除该共享账号？将同时从同地区的 App 和 IDE 列表移除。",
+      "deleteSharedMulti": "确认删除选中的 {{count}} 个共享账号？将同时从同地区的 App 和 IDE 列表移除。",
+      "tabListLabel": "Qoder 变体",
+      "variants": {
+        "qoder": "Qoder IDE",
+        "qoder_app": "Qoder",
+        "qoder_cn_ide": "Qoder CN IDE",
+        "qoder_cn_app": "Qoder CN"
+      }
+    },
     "flowNotice": {
       "title": "Qoder 账号接入说明（点击展开/收起）",
       "desc": "当前支持官方 CLI device login 授权、本地导入、JSON 导入、切号注入、应用多开绑定与配额概览。浏览器授权无需保持 Qoder 运行；切号注入按 Qoder 客户端真实落盘规则写回。",
@@ -6694,7 +6731,8 @@
     },
     "oauth": {
       "hint": "点击下方按钮，在浏览器中完成 Qoder 官方授权。该流程走官方 CLI device login 链路，无需保持 Qoder 运行。",
-      "copyLoginUrl": "复制登录链接"
+      "copyLoginUrl": "复制登录链接",
+      "accountNotVisible": "授权账号未出现在已保存的账号列表中"
     },
     "usageOverview": {
       "title": "用量概览",
@@ -6712,7 +6750,8 @@
     "instances": {
       "unsupported": {
         "descPlatform": "Qoder 应用多开仅支持 macOS、Windows 和 Linux。"
-      }
+      },
+      "appMultiInstanceUnsupported": "{{variant}} 客户端不支持应用多开：官方单实例机制限制，同一客户端无法同时运行多个登录态；可使用账号切换功能更换账号。"
     },
     "addModal": {
       "title": "添加 Qoder 账号"
@@ -6720,7 +6759,8 @@
     "import": {
       "localDesc": "从本机 Qoder 客户端读取当前登录状态（包含用户信息、套餐与 Credits 使用情况）。",
       "localFailed": "本机导入失败：{{error}}",
-      "localSuccess": "已从本机 Qoder 导入账号。"
+      "localSuccess": "已从本机 Qoder 导入账号。",
+      "autoCloseCountdown": "{{seconds}} 秒后自动关闭弹窗"
     },
     "empty": {
       "desc": "点击“添加账号”，可使用授权登录、本机导入或 JSON 导入。"

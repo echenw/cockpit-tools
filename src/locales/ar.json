@@ -5827,7 +5827,10 @@
     },
     "qoder": {
       "title": "إعدادات Qoder",
-      "appPath": "مسار Qoder"
+      "appPathIde": "مسار Qoder IDE",
+      "appPathApp": "مسار Qoder",
+      "appPathCnIde": "مسار Qoder CN IDE",
+      "appPathCnApp": "مسار Qoder CN"
     },
     "trae": {
       "title": "إعدادات Trae",
@@ -6513,6 +6516,18 @@
   },
   "qoder": {
     "title": "إدارة حسابات Qoder",
+    "suite": {
+      "sharedAccounts": "يتشارك App وIDE الحسابات داخل كل منطقة. يكفي التفويض أو الاستيراد مرة واحدة لاستخدام كليهما.",
+      "deleteSharedSingle": "هل تريد حذف هذا الحساب المشترك من قائمتي App وIDE في هذه المنطقة؟",
+      "deleteSharedMulti": "هل تريد حذف {{count}} حسابات مشتركة من قائمتي App وIDE في هذه المنطقة؟",
+      "tabListLabel": "متغيرات Qoder",
+      "variants": {
+        "qoder": "Qoder IDE",
+        "qoder_app": "Qoder",
+        "qoder_cn_ide": "Qoder CN IDE",
+        "qoder_cn_app": "Qoder CN"
+      }
+    },
     "comingSoon": {
       "title": "ميزة المثيلات المتعددة قادمة قريبًا",
       "desc": "تشغيل عدة مثيلات Qoder.app بحسابات مختلفة في وقت واحد، ترقبوا."
@@ -6520,11 +6535,13 @@
     "instances": {
       "unsupported": {
         "descPlatform": "تعدد مثيلات Qoder مدعوم فقط على macOS وWindows وLinux."
-      }
+      },
+      "appMultiInstanceUnsupported": "لا يدعم عميل {{variant}} تعدد النسخ: آلية النسخة الواحدة الرسمية تمنع تشغيل عدة جلسات في الوقت نفسه. استخدم ميزة تبديل الحساب."
     },
     "oauth": {
       "hint": "يرجى إكمال تسجيل الدخول في صفحة المتصفح المفتوحة: إذا لم تُفتح صفحة تسجيل الدخول تلقائيًا، فانقر على \"نسخ رابط تسجيل الدخول\" ثم الصق الرابط في المتصفح لإكمال تسجيل الدخول.",
-      "copyLoginUrl": "نسخ رابط تسجيل الدخول"
+      "copyLoginUrl": "نسخ رابط تسجيل الدخول",
+      "accountNotVisible": "لم يظهر الحساب الذي تم تفويضه في قائمة الحسابات المحفوظة"
     },
     "usageOverview": {
       "title": "نظرة عامة على الاستخدام",
@@ -6547,7 +6564,8 @@
     "import": {
       "localDesc": "يقرأ حالة تسجيل الدخول الحالية من عميل Qoder المحلي، بما في ذلك معلومات المستخدم والخطة واستخدام الرصيد.",
       "localFailed": "فشل الاستيراد المحلي: {{error}}",
-      "localSuccess": "تم استيراد الحساب من Qoder المحلي."
+      "localSuccess": "تم استيراد الحساب من Qoder المحلي.",
+      "autoCloseCountdown": "سيُغلق تلقائيًا خلال {{seconds}} ث"
     },
     "empty": {
       "desc": "انقر على \"إضافة حساب\" لاستخدام تسجيل الدخول، الاستيراد المحلي، أو استيراد JSON."

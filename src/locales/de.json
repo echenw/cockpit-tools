@@ -5780,7 +5780,10 @@
     },
     "qoder": {
       "title": "Qoder-Einstellungen",
-      "appPath": "Qoder-Pfad"
+      "appPathIde": "Qoder IDE-Pfad",
+      "appPathApp": "Qoder-Pfad",
+      "appPathCnIde": "Qoder CN IDE-Pfad",
+      "appPathCnApp": "Qoder CN-Pfad"
     },
     "trae": {
       "title": "Trae-Einstellungen",
@@ -6466,6 +6469,18 @@
   },
   "qoder": {
     "title": "Qoder-Kontenverwaltung",
+    "suite": {
+      "sharedAccounts": "App und IDE teilen Konten innerhalb einer Region. Einmal autorisieren oder importieren, um beide zu nutzen.",
+      "deleteSharedSingle": "Dieses gemeinsame Konto aus den App- und IDE-Listen dieser Region löschen?",
+      "deleteSharedMulti": "{{count}} gemeinsame Konten aus den App- und IDE-Listen dieser Region löschen?",
+      "tabListLabel": "Qoder-Varianten",
+      "variants": {
+        "qoder": "Qoder IDE",
+        "qoder_app": "Qoder",
+        "qoder_cn_ide": "Qoder CN IDE",
+        "qoder_cn_app": "Qoder CN"
+      }
+    },
     "comingSoon": {
       "title": "Multi-Instanz kommt bald",
       "desc": "Führen Sie mehrere Qoder.app-Instanzen mit verschiedenen Konten gleichzeitig aus."
@@ -6473,11 +6488,13 @@
     "instances": {
       "unsupported": {
         "descPlatform": "Mehrere Qoder-Instanzen werden nur unter macOS, Windows und Linux unterstützt."
-      }
+      },
+      "appMultiInstanceUnsupported": "Der {{variant}}-Client unterstützt keine Mehrfachinstanzen: Die offizielle Einzelinstanz-Beschränkung verhindert mehrere gleichzeitige Sitzungen. Verwenden Sie stattdessen den Kontowechsel."
     },
     "oauth": {
       "hint": "Bitte schließen Sie die Anmeldung auf der geöffneten Browserseite ab: Wenn sich die Anmeldeseite nicht automatisch geöffnet hat, klicken Sie auf „Anmeldelink kopieren“, kopieren Sie den Link und fügen Sie ihn in Ihren Browser ein, um die Anmeldung abzuschließen.",
-      "copyLoginUrl": "Anmeldelink kopieren"
+      "copyLoginUrl": "Anmeldelink kopieren",
+      "accountNotVisible": "Das autorisierte Konto ist nicht in der gespeicherten Kontoliste erschienen"
     },
     "usageOverview": {
       "title": "Nutzungsübersicht",
@@ -6500,7 +6517,8 @@
     "import": {
       "localDesc": "Liest den aktuellen Anmeldestatus aus dem lokalen Qoder-Client, einschließlich Benutzerinfos, Tarif und Credits-Nutzung.",
       "localFailed": "Lokaler Import fehlgeschlagen: {{error}}",
-      "localSuccess": "Konto aus lokalem Qoder importiert."
+      "localSuccess": "Konto aus lokalem Qoder importiert.",
+      "autoCloseCountdown": "Schließt automatisch in {{seconds}} s"
     },
     "empty": {
       "desc": "Klicken Sie auf Konto hinzufügen, um die Anmeldung, den lokalen Import oder den JSON-Import zu verwenden."

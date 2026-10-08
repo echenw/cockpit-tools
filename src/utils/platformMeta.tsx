@@ -45,7 +45,13 @@ export function getPlatformLabel(platformId: PlatformId, _t: TFunction): string 
     case 'codebuddy_cn':
       return _t('nav.codebuddyCn', 'CodeBuddy CN');
     case 'qoder':
-      return _t('nav.qoder', 'Qoder');
+      return _t('qoder.suite.variants.qoder', 'Qoder IDE');
+    case 'qoder_app':
+      return _t('qoder.suite.variants.qoder_app', 'Qoder');
+    case 'qoder_cn_ide':
+      return _t('qoder.suite.variants.qoder_cn_ide', 'Qoder CN IDE');
+    case 'qoder_cn_app':
+      return _t('qoder.suite.variants.qoder_cn_app', 'Qoder CN');
     case 'zcode':
       return 'ZCode';
     case 'trae':
@@ -92,7 +98,10 @@ export function renderPlatformIcon(platformId: PlatformId, size = 20): ReactNode
     case 'codebuddy_cn':
       return <CodebuddyIcon style={{ width: size, height: size }} />;
     case 'qoder':
-      return <QoderIcon style={{ width: size, height: size }} />;
+    case 'qoder_app':
+    case 'qoder_cn_ide':
+    case 'qoder_cn_app':
+      return <QoderIcon variant={platformId} style={{ width: size, height: size }} />;
     case 'zcode':
       return <ZcodeIcon size={size} />;
     case 'trae':
