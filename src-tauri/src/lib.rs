@@ -556,6 +556,7 @@ pub fn run() {
             // 官方客户端临时登录会留下一次性 profile，成功/失败/取消都会清理；
             // 这里额外启动巡检，兜住异常退出后残留的临时目录与钥匙串条目。
             modules::codex_temp_login::ensure_cleanup_loop_started();
+            modules::qoder_official_login::ensure_cleanup_loop_started();
 
             // Wakeup restore/start and Deep Link registration/read can hit disk or OS
             // APIs — never block setup (window + skeleton tray first).
@@ -1378,6 +1379,9 @@ pub fn run() {
             commands::qoder::delete_qoder_accounts,
             commands::qoder::import_qoder_from_json,
             commands::qoder::import_qoder_from_local,
+            commands::qoder::start_qoder_official_login,
+            commands::qoder::get_qoder_official_login_status,
+            commands::qoder::cancel_qoder_official_login,
             commands::qoder::qoder_oauth_login_start,
             commands::qoder::qoder_oauth_login_peek,
             commands::qoder::qoder_oauth_login_complete,

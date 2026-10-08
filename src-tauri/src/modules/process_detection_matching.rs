@@ -1486,7 +1486,6 @@ fn is_qoder_macos_main_process_command_line(cmdline: &str) -> bool {
         return false;
     }
     lower.contains("/qoder ide.app/contents/macos/qoder")
-        || lower.contains("/qoder.app/contents/macos/qoder")
 }
 
 #[cfg(target_os = "macos")]
@@ -1507,12 +1506,8 @@ fn collect_qoder_process_entries_macos() -> Vec<(u32, Option<String>)> {
                 Ok(value) => value,
                 Err(_) => continue,
             };
-            // Qoder's current macOS bundle is named `Qoder IDE.app`, while
-            // older builds used `Qoder.app`. The main Electron process does
-            // not expose `--user-data-dir`, so it must still be collected and
-            // matched to the configured default profile via the `None`
-            // fallback. Match the executable segment, not just the bundle
-            // name, so helpers under `Contents/Frameworks` are excluded.
+            // 默认 IDE 主进程不暴露 `--user-data-dir`，通过默认 profile 匹配。
+            // 只匹配主程序路径，排除 Frameworks 下的 helper。
             if !is_qoder_macos_main_process_command_line(cmdline) {
                 continue;
             }
@@ -1574,6 +1569,218 @@ pub fn resolve_qoder_pid_from_entries(
 pub fn resolve_qoder_pid(last_pid: Option<u32>, user_data_dir: Option<&str>) -> Option<u32> {
     let entries = collect_qoder_process_entries();
     resolve_qoder_pid_from_entries(last_pid, user_data_dir, &entries)
+}
+
+// ---- Qoder 变体客户端进程（变体切号后关闭/启动对应客户端）----
+// 变体路径按平台表及实际可执行路径匹配，避免误伤其他变体。
+
+/// 变体客户端 bundle 进程命令行标记（纯函数，小写）。
+#[cfg(target_os = "macos")]
+fn qoder_variant_main_process_marker(
+    kind: crate::modules::qoder_variant::QoderVariantKind,
+) -> String {
+    format!(
+        "/{}/contents/macos/",
+        crate::modules::qoder_platform_paths::qoder_platform_table(kind)
+            .macos_app_bundle
+            .to_ascii_lowercase()
+    )
+}
+
+/// macOS 变体主进程命令行判定（纯函数；排除 helper/crashpad）。
+#[cfg(target_os = "macos")]
+fn is_qoder_variant_main_process_command_line(
+    kind: crate::modules::qoder_variant::QoderVariantKind,
+    cmdline: &str,
+) -> bool {
+    let lower = cmdline.to_lowercase();
+    if lower.contains("crashpad_handler") || is_helper_command_line(&lower) {
+        return false;
+    }
+    lower.contains(&qoder_variant_main_process_marker(kind))
+}
+
+#[cfg(target_os = "macos")]
+fn collect_qoder_process_entries_macos_for_variant(
+    kind: crate::modules::qoder_variant::QoderVariantKind,
+) -> Vec<(u32, Option<String>)> {
+    let mut entries = Vec::new();
+    let output = Command::new("ps").args(["-axo", "pid,command"]).output();
+    if let Ok(output) = output {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines().skip(1) {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let mut parts = line.splitn(2, |ch: char| ch.is_whitespace());
+            let pid_str = parts.next().unwrap_or("").trim();
+            let cmdline = parts.next().unwrap_or("").trim();
+            let pid = match pid_str.parse::<u32>() {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+            if !is_qoder_variant_main_process_command_line(kind, cmdline) {
+                continue;
+            }
+            let dir = extract_user_data_dir_from_command_line(cmdline);
+            entries.push((pid, dir));
+        }
+    }
+    entries
+}
+
+/// 变体客户端主进程枚举，按安装路径隔离同名进程。
+pub fn collect_qoder_process_entries_for_variant(
+    kind: crate::modules::qoder_variant::QoderVariantKind,
+) -> Vec<(u32, Option<String>)> {
+    let expected_launch = resolve_qoder_variant_launch_path(kind)
+        .ok()
+        .map(|path| normalize_path_for_compare(&path.to_string_lossy()));
+    if expected_launch.is_none() {
+        return Vec::new();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return filter_entries_by_expected_launch_path(
+            kind.display_name(),
+            collect_qoder_process_entries_macos_for_variant(kind),
+            expected_launch,
+        );
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let table = crate::modules::qoder_platform_paths::qoder_platform_table(kind);
+        let process_name = table
+            .windows_exes
+            .first()
+            .copied()
+            .unwrap_or("Qoder.exe");
+        let Some(expected_process) = resolve_qoder_windows_main_process_path(
+            process_name,
+            expected_launch.as_deref().expect("launch path checked above"),
+        ) else {
+            crate::modules::logger::log_warn(&format!(
+                "[{} Resolve] 无法从启动路径解析主进程路径，跳过 PID 匹配",
+                kind.display_name()
+            ));
+            return Vec::new();
+        };
+        let entries = collect_named_electron_process_entries_from_powershell(
+            &expected_process,
+            process_name,
+            kind.display_name(),
+        );
+        if !entries.is_empty() {
+            return entries;
+        }
+        crate::modules::logger::log_warn(&format!(
+            "[{} Probe] PowerShell 返回空结果，回退到 sysinfo 进程探测",
+            kind.display_name()
+        ));
+        return collect_named_electron_process_entries_from_sysinfo_fallback(
+            &expected_process,
+            "qoder",
+            process_name,
+            kind.display_name(),
+        );
+    }
+    #[cfg(target_os = "linux")]
+    {
+        return filter_entries_by_expected_launch_path(
+            kind.display_name(),
+            collect_named_electron_process_entries_from_proc("qoder"),
+            expected_launch,
+        );
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        let _ = (kind, expected_launch);
+        Vec::new()
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_qoder_windows_main_process_path(
+    process_name: &str,
+    launch_path: &str,
+) -> Option<String> {
+    let launch = Path::new(launch_path);
+    let launch_name = launch.file_name().and_then(|name| name.to_str());
+    let process_path = if launch_name
+        .is_some_and(|name| name.eq_ignore_ascii_case(process_name))
+    {
+        launch.to_path_buf()
+    } else {
+        launch.parent()?.join(process_name)
+    };
+    let normalized = normalize_path_for_compare(&process_path.to_string_lossy());
+    (!normalized.is_empty()).then_some(normalized)
+}
+
+/// 变体客户端默认 userData 目录（读平台表 + 真实环境；纯数据源复用 qoder_platform_paths）。
+pub fn qoder_variant_default_user_data_dir(
+    kind: crate::modules::qoder_variant::QoderVariantKind,
+) -> Option<String> {
+    use crate::modules::qoder_platform_paths as qpp;
+    #[cfg(target_os = "macos")]
+    {
+        let home = dirs::home_dir()?;
+        Some(
+            qpp::macos_data_dir_with_home(kind, &home)
+                .to_string_lossy()
+                .to_string(),
+        )
+    }
+    #[cfg(target_os = "windows")]
+    {
+        qpp::windows_data_dir(kind)
+            .ok()
+            .map(|path| path.to_string_lossy().to_string())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        qpp::linux_data_dir(kind)
+            .ok()
+            .map(|path| path.to_string_lossy().to_string())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        let _ = kind;
+        None
+    }
+}
+
+fn resolve_qoder_target_and_fallback_for_variant(
+    kind: crate::modules::qoder_variant::QoderVariantKind,
+    user_data_dir: Option<&str>,
+) -> Option<(String, bool)> {
+    build_user_data_dir_match_target(
+        user_data_dir,
+        qoder_variant_default_user_data_dir(kind),
+        !strict_process_detect_enabled(),
+    )
+}
+
+fn resolve_qoder_pid_for_variant_from_entries(
+    kind: crate::modules::qoder_variant::QoderVariantKind,
+    last_pid: Option<u32>,
+    user_data_dir: Option<&str>,
+    entries: &[(u32, Option<String>)],
+) -> Option<u32> {
+    let (target, allow_none_for_target) =
+        resolve_qoder_target_and_fallback_for_variant(kind, user_data_dir)?;
+    resolve_pid_from_entries_by_user_data_dir(last_pid, &target, allow_none_for_target, entries)
+}
+
+/// 变体客户端主进程 PID 解析（按变体 bundle 枚举 + 变体 userData 目标）。
+pub fn resolve_qoder_pid_for_variant(
+    kind: crate::modules::qoder_variant::QoderVariantKind,
+    last_pid: Option<u32>,
+    user_data_dir: Option<&str>,
+) -> Option<u32> {
+    let entries = collect_qoder_process_entries_for_variant(kind);
+    resolve_qoder_pid_for_variant_from_entries(kind, last_pid, user_data_dir, &entries)
 }
 
 pub fn resolve_trae_pid_from_entries(
@@ -3067,8 +3274,9 @@ pub fn collect_qoder_process_entries() -> Vec<(u32, Option<String>)> {
         let expected = expected_launch
             .as_deref()
             .expect("expected launch path must exist");
-        let entries =
-            collect_named_electron_process_entries_from_powershell(expected, "Qoder.exe", "Qoder");
+        let entries = collect_named_electron_process_entries_from_powershell(
+            expected, "Qoder IDE.exe", "Qoder IDE",
+        );
         if !entries.is_empty() {
             return entries;
         }
@@ -3078,8 +3286,8 @@ pub fn collect_qoder_process_entries() -> Vec<(u32, Option<String>)> {
         return collect_named_electron_process_entries_from_sysinfo_fallback(
             expected,
             "qoder",
-            "Qoder.exe",
-            "Qoder",
+            "Qoder IDE.exe",
+            "Qoder IDE",
         );
     }
 

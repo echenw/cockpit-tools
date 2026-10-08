@@ -157,7 +157,20 @@ fn roots_and_defaults() -> Result<(Vec<PlatformRoot>, Vec<PathBuf>), String> {
     platform!("kiro", kiro_instance);
     platform!("codebuddy", codebuddy_instance);
     platform!("codebuddy_cn", codebuddy_cn_instance);
-    platform!("qoder", qoder_instance);
+    use modules::qoder_variant::QoderVariantKind;
+    // 实例管理仅服务 IDE 系变体（App 系客户端受官方单实例限制，无实例目录）。
+    for (name, kind) in [
+        ("qoder", QoderVariantKind::Qoder),
+        ("qoder-cn-ide", QoderVariantKind::QoderCnIde),
+    ] {
+        roots.push(PlatformRoot {
+            platform: name.into(),
+            root: modules::qoder_instance::get_default_instances_root_dir_for_variant(kind)?,
+        });
+        defaults.push(path_key(
+            &modules::qoder_instance::get_default_qoder_user_data_dir_for_variant(kind)?,
+        ));
+    }
     platform!("workbuddy", workbuddy_instance);
     platform!("zcode", zcode_instance);
     platform!("grok", grok_instance);

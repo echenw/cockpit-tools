@@ -417,7 +417,7 @@
         account: &crate::models::qoder::QoderAccount,
     ) -> QoderSubscriptionInfo {
         let roots = [
-            account.auth_credit_usage_raw.as_ref(),
+            account.credit_usage(),
             account.auth_user_plan_raw.as_ref(),
             account.auth_user_info_raw.as_ref(),
         ];
@@ -434,7 +434,7 @@
             ],
         )
         .map(str::to_string)
-        .or_else(|| account.plan_type.clone())
+        .or_else(|| account.plan_type_for_display().map(str::to_string))
         .unwrap_or_else(|| "UNKNOWN".to_string());
 
         let parse_bucket =
@@ -494,7 +494,7 @@
 
         let user_quota = parse_bucket(
             &[
-                json_path(account.auth_credit_usage_raw.as_ref(), &["userQuota"]),
+                json_path(account.credit_usage(), &["userQuota"]),
                 json_path(account.auth_user_plan_raw.as_ref(), &["userQuota"]),
                 json_path(account.auth_user_info_raw.as_ref(), &["userQuota"]),
             ],
@@ -507,9 +507,9 @@
         );
         let add_on_quota = parse_bucket(
             &[
-                json_path(account.auth_credit_usage_raw.as_ref(), &["addOnQuota"]),
-                json_path(account.auth_credit_usage_raw.as_ref(), &["addonQuota"]),
-                json_path(account.auth_credit_usage_raw.as_ref(), &["add_on_quota"]),
+                json_path(account.credit_usage(), &["addOnQuota"]),
+                json_path(account.credit_usage(), &["addonQuota"]),
+                json_path(account.credit_usage(), &["add_on_quota"]),
                 json_path(account.auth_user_plan_raw.as_ref(), &["addOnQuota"]),
                 json_path(account.auth_user_plan_raw.as_ref(), &["addonQuota"]),
                 json_path(account.auth_user_plan_raw.as_ref(), &["add_on_quota"]),
@@ -519,18 +519,18 @@
 
         let shared_credit_root = [
             json_path(
-                account.auth_credit_usage_raw.as_ref(),
+                account.credit_usage(),
                 &["orgResourcePackage"],
             ),
             json_path(
-                account.auth_credit_usage_raw.as_ref(),
+                account.credit_usage(),
                 &["organizationResourcePackage"],
             ),
             json_path(
-                account.auth_credit_usage_raw.as_ref(),
+                account.credit_usage(),
                 &["sharedCreditPackage"],
             ),
-            json_path(account.auth_credit_usage_raw.as_ref(), &["resourcePackage"]),
+            json_path(account.credit_usage(), &["resourcePackage"]),
             json_path(account.auth_user_plan_raw.as_ref(), &["orgResourcePackage"]),
         ];
         let shared_credit_package_used =
@@ -679,7 +679,10 @@
             PlatformId::Kiro => build_kiro_cards(lang),
             PlatformId::Cursor => build_cursor_cards(lang),
             PlatformId::Grok => build_grok_cards(lang),
-            PlatformId::Qoder => build_qoder_cards(lang),
+            PlatformId::Qoder
+            | PlatformId::QoderApp
+            | PlatformId::QoderCnIde
+            | PlatformId::QoderCnApp => build_qoder_cards(lang, platform),
             PlatformId::Zcode => build_zcode_cards(lang),
             PlatformId::Trae
             | PlatformId::TraeSolo
@@ -1665,9 +1668,20 @@
         (cards, current_id, recommended)
     }
 
-    fn build_qoder_cards(lang: &str) -> (Vec<AccountCard>, Option<String>, Option<String>) {
+    fn build_qoder_cards(
+        lang: &str,
+        platform: PlatformId,
+    ) -> (Vec<AccountCard>, Option<String>, Option<String>) {
         let mut accounts = modules::qoder_account::list_accounts();
-        let current_id = modules::qoder_account::resolve_current_account_id(&accounts);
+        let current_id = modules::qoder_variant::QoderVariantKind::parse(Some(platform.as_str()))
+            .ok()
+            .and_then(|kind| {
+                modules::qoder_account::resolve_current_account_id_for_variant(&accounts, kind)
+            });
+        accounts.retain(|account| {
+            modules::qoder_variant::QoderVariantKind::parse(Some(platform.as_str()))
+                .is_ok_and(|kind| modules::qoder_account::account_supports_variant(account, kind))
+        });
         accounts
             .sort_by_key(|account| std::cmp::Reverse(account.last_used.max(account.created_at)));
         let cards = accounts
@@ -1773,14 +1787,27 @@
                     ));
                 }
                 let remaining_percent = min_quota_progress(&rows, false);
-                AccountCard {
-                    id: account.id.clone(),
-                    title: account
+                let security_mobile = modules::qoder_account::security_mobile_of(&account);
+                let title = if modules::qoder_account::account_email_is_sentinel(&account.email) {
+                    first_non_empty(&[
+                        security_mobile.as_deref(),
+                        account.display_name.as_deref(),
+                        account.user_id.as_deref(),
+                        Some(account.id.as_str()),
+                    ])
+                    .unwrap_or_default()
+                    .to_string()
+                } else {
+                    account
                         .display_name
                         .clone()
                         .filter(|text| !text.trim().is_empty())
-                        .unwrap_or(account.email),
-                    plan: account.plan_type,
+                        .unwrap_or_else(|| account.email.clone())
+                };
+                AccountCard {
+                    id: account.id.clone(),
+                    title,
+                    plan: account.plan_type_for_display().map(str::to_string),
                     updated_at: display_updated_at(
                         account.usage_updated_at,
                         account.last_used,
@@ -2273,4 +2300,3 @@
             .collect();
         (cards, current_id, recommended)
     }
-

@@ -1255,7 +1255,7 @@ fn append_qoder_rows(rows: &mut Vec<ReportRow>) {
     for account in accounts {
         let account_name = account.email.clone();
         let mut roots: Vec<&Value> = Vec::new();
-        if let Some(raw) = account.auth_credit_usage_raw.as_ref() {
+        if let Some(raw) = account.credit_usage() {
             roots.push(raw);
         }
         if let Some(raw) = account.auth_user_plan_raw.as_ref() {
@@ -1274,7 +1274,7 @@ fn append_qoder_rows(rows: &mut Vec<ReportRow>) {
             &[&["userQuota"], &["user_quota"]],
             "User quota",
             &reset,
-            account.plan_type.as_deref().unwrap_or(""),
+            account.plan_type_for_display().unwrap_or(""),
         );
         pushed += push_qoder_bucket_row(
             rows,
@@ -1283,7 +1283,7 @@ fn append_qoder_rows(rows: &mut Vec<ReportRow>) {
             &[&["addOnQuota"], &["addonQuota"], &["add_on_quota"]],
             "Add-on quota",
             &reset,
-            account.plan_type.as_deref().unwrap_or(""),
+            account.plan_type_for_display().unwrap_or(""),
         );
 
         if pushed == 0 {
@@ -1306,7 +1306,7 @@ fn append_qoder_rows(rows: &mut Vec<ReportRow>) {
                         &format_number_compact(remaining.max(0.0)),
                         &reset,
                         "normal",
-                        account.plan_type.as_deref().unwrap_or(""),
+                        account.plan_type_for_display().unwrap_or(""),
                     ));
                     continue;
                 }
@@ -1320,10 +1320,7 @@ fn append_qoder_rows(rows: &mut Vec<ReportRow>) {
                 "-",
                 &reset,
                 "normal",
-                account
-                    .plan_type
-                    .as_deref()
-                    .unwrap_or("Credits data unavailable"),
+                account.plan_type_for_display().unwrap_or("Credits data unavailable"),
             ));
         }
     }

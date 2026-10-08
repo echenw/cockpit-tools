@@ -1159,6 +1159,330 @@ pub fn start_qoder_default_with_args_with_new_window(
     }
 }
 
+/// 变体切号后启动对应客户端，
+/// 不带 `--user-data-dir`（变体客户端使用各自默认 profile），失败不改变已写入的登录态。
+pub fn launch_qoder_variant_client(
+    kind: crate::modules::qoder_variant::QoderVariantKind,
+) -> Result<u32, String> {
+    let launch_path = resolve_qoder_variant_launch_path(kind)?;
+    #[cfg(target_os = "macos")]
+    {
+        let app_root = resolve_macos_app_root_from_launch_path(&launch_path)
+            .ok_or_else(|| app_path_missing_error(kind.provider_key()))?;
+        let open_pid = spawn_open_app_with_options(&app_root, &[], true)
+            .map_err(|e| format!("启动 {} 失败: {}", kind.display_name(), e))?;
+        crate::modules::logger::log_info(&format!(
+            "[Qoder Launch] variant={} 启动命令已发送（open -n -a） bundle={} open_pid={}",
+            kind.provider_key(),
+            app_root,
+            open_pid
+        ));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let mut cmd = Command::new(&launch_path);
+        apply_managed_proxy_env_to_command(&mut cmd);
+        if should_detach_child() {
+            cmd.creation_flags(0x08000000 | CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
+            cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        } else {
+            cmd.creation_flags(0x08000000);
+        }
+        spawn_command_with_trace(&mut cmd)
+            .map_err(|err| format!("启动 {} 失败: {}", kind.display_name(), err))?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let mut cmd = Command::new(&launch_path);
+        apply_managed_proxy_env_to_command(&mut cmd);
+        if should_detach_child() {
+            cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        }
+        spawn_detached_unix(&mut cmd)
+            .map_err(|err| format!("启动 {} 失败: {}", kind.display_name(), err))?;
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    return Err(format!("{} 不支持当前系统", kind.display_name()));
+
+    let data_dir = qoder_variant_default_user_data_dir(kind);
+    let probe_started = Instant::now();
+    let timeout = Duration::from_secs(6);
+    while probe_started.elapsed() < timeout {
+        if let Some(resolved_pid) =
+            resolve_qoder_pid_for_variant(kind, None, data_dir.as_deref())
+        {
+            crate::modules::logger::log_info(&format!(
+                "[Qoder Launch] variant={} 已匹配主进程 pid={}",
+                kind.provider_key(),
+                resolved_pid
+            ));
+            return Ok(resolved_pid);
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+    Err(format!("启动 {} 后未检测到客户端主进程，请检查客户端状态", kind.display_name()))
+}
+
+/// 按变体启动受管实例：带 `--user-data-dir` 指定实例目录。
+pub fn start_qoder_variant_with_args_with_new_window(
+    kind: crate::modules::qoder_variant::QoderVariantKind,
+    user_data_dir: &str,
+    extra_args: &[String],
+    use_new_window: bool,
+) -> Result<u32, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let target = user_data_dir.trim();
+        if target.is_empty() {
+            return Err("实例目录为空，无法启动".to_string());
+        }
+        let launch_path = resolve_qoder_variant_launch_path(kind)?;
+        let app_root = resolve_macos_app_root_from_launch_path(&launch_path)
+            .ok_or_else(|| app_path_missing_error(kind.provider_key()))?;
+
+        let mut args: Vec<String> = Vec::new();
+        args.push("--user-data-dir".to_string());
+        args.push(target.to_string());
+        if use_new_window {
+            args.push("--new-window".to_string());
+        } else {
+            args.push("--reuse-window".to_string());
+        }
+        for arg in extra_args {
+            let trimmed = arg.trim();
+            if !trimmed.is_empty() {
+                args.push(trimmed.to_string());
+            }
+        }
+
+        let open_pid = spawn_open_app_with_options(&app_root, &args, true)
+            .map_err(|e| format!("启动 {} 失败: {}", kind.display_name(), e))?;
+        crate::modules::logger::log_info(&format!(
+            "[Qoder Instance] variant={} 启动命令已发送（open -n -a）",
+            kind.provider_key()
+        ));
+        let probe_started = Instant::now();
+        let timeout = Duration::from_secs(6);
+        while probe_started.elapsed() < timeout {
+            if let Some(resolved_pid) = resolve_qoder_pid_for_variant(kind, None, Some(target)) {
+                return Ok(resolved_pid);
+            }
+            thread::sleep(Duration::from_millis(200));
+        }
+        crate::modules::logger::log_warn(&format!(
+            "[Qoder Instance] variant={} 启动后 6s 内未匹配到实例 PID，回退 open pid={}",
+            kind.provider_key(),
+            open_pid
+        ));
+        return Ok(open_pid);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+
+        let target = user_data_dir.trim();
+        if target.is_empty() {
+            return Err("实例目录为空，无法启动".to_string());
+        }
+        let launch_path = resolve_qoder_variant_launch_path(kind)?;
+
+        let mut cmd = Command::new(&launch_path);
+        apply_managed_proxy_env_to_command(&mut cmd);
+        if should_detach_child() {
+            cmd.creation_flags(0x08000000 | CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
+            cmd.stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+        } else {
+            cmd.creation_flags(0x08000000);
+        }
+        cmd.arg("--user-data-dir").arg(target);
+        if use_new_window {
+            cmd.arg("--new-window");
+        } else {
+            cmd.arg("--reuse-window");
+        }
+        for arg in extra_args {
+            let trimmed = arg.trim();
+            if !trimmed.is_empty() {
+                cmd.arg(trimmed);
+            }
+        }
+
+        let child = spawn_command_with_trace(&mut cmd)
+            .map_err(|e| format!("启动 {} 失败: {}", kind.display_name(), e))?;
+        crate::modules::logger::log_info(&format!(
+            "[Qoder Instance] variant={} 启动命令已发送",
+            kind.provider_key()
+        ));
+        return Ok(child.id());
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let target = user_data_dir.trim();
+        if target.is_empty() {
+            return Err("实例目录为空，无法启动".to_string());
+        }
+        let launch_path = resolve_qoder_variant_launch_path(kind)?;
+
+        let mut cmd = Command::new(&launch_path);
+        apply_managed_proxy_env_to_command(&mut cmd);
+        if should_detach_child() {
+            cmd.stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+        }
+        cmd.arg("--user-data-dir").arg(target);
+        if use_new_window {
+            cmd.arg("--new-window");
+        } else {
+            cmd.arg("--reuse-window");
+        }
+        for arg in extra_args {
+            let trimmed = arg.trim();
+            if !trimmed.is_empty() {
+                cmd.arg(trimmed);
+            }
+        }
+
+        let child = spawn_detached_unix(&mut cmd)
+            .map_err(|e| format!("启动 {} 失败: {}", kind.display_name(), e))?;
+        crate::modules::logger::log_info(&format!(
+            "[Qoder Instance] variant={} 启动命令已发送",
+            kind.provider_key()
+        ));
+        return Ok(child.id());
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        let _ = (kind, user_data_dir, extra_args, use_new_window);
+        Err("Qoder 应用多开仅支持 macOS、Windows 和 Linux".to_string())
+    }
+}
+
+/// 按变体启动默认实例：不带 `--user-data-dir`，使用各变体默认 profile。
+pub fn start_qoder_variant_default_with_args_with_new_window(
+    kind: crate::modules::qoder_variant::QoderVariantKind,
+    extra_args: &[String],
+    use_new_window: bool,
+) -> Result<u32, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let launch_path = resolve_qoder_variant_launch_path(kind)?;
+        let app_root = resolve_macos_app_root_from_launch_path(&launch_path)
+            .ok_or_else(|| app_path_missing_error(kind.provider_key()))?;
+
+        let mut args: Vec<String> = Vec::new();
+        if use_new_window {
+            args.push("--new-window".to_string());
+        } else {
+            args.push("--reuse-window".to_string());
+        }
+        for arg in extra_args {
+            let trimmed = arg.trim();
+            if !trimmed.is_empty() {
+                args.push(trimmed.to_string());
+            }
+        }
+
+        let open_pid = spawn_open_app_with_options(&app_root, &args, true)
+            .map_err(|e| format!("启动 {} 失败: {}", kind.display_name(), e))?;
+        crate::modules::logger::log_info(&format!(
+            "[Qoder Instance] variant={} 默认实例启动命令已发送（open -n -a）",
+            kind.provider_key()
+        ));
+        let probe_started = Instant::now();
+        let timeout = Duration::from_secs(6);
+        while probe_started.elapsed() < timeout {
+            if let Some(resolved_pid) = resolve_qoder_pid_for_variant(kind, None, None) {
+                return Ok(resolved_pid);
+            }
+            thread::sleep(Duration::from_millis(200));
+        }
+        crate::modules::logger::log_warn(&format!(
+            "[Qoder Instance] variant={} 启动后 6s 内未匹配到默认实例 PID，回退 open pid={}",
+            kind.provider_key(),
+            open_pid
+        ));
+        return Ok(open_pid);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+
+        let launch_path = resolve_qoder_variant_launch_path(kind)?;
+        let mut cmd = Command::new(&launch_path);
+        apply_managed_proxy_env_to_command(&mut cmd);
+        if should_detach_child() {
+            cmd.creation_flags(0x08000000 | CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
+            cmd.stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+        } else {
+            cmd.creation_flags(0x08000000);
+        }
+        if use_new_window {
+            cmd.arg("--new-window");
+        } else {
+            cmd.arg("--reuse-window");
+        }
+        for arg in extra_args {
+            let trimmed = arg.trim();
+            if !trimmed.is_empty() {
+                cmd.arg(trimmed);
+            }
+        }
+        let child = spawn_command_with_trace(&mut cmd)
+            .map_err(|e| format!("启动 {} 失败: {}", kind.display_name(), e))?;
+        crate::modules::logger::log_info(&format!(
+            "[Qoder Instance] variant={} 默认实例启动命令已发送",
+            kind.provider_key()
+        ));
+        return Ok(child.id());
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let launch_path = resolve_qoder_variant_launch_path(kind)?;
+        let mut cmd = Command::new(&launch_path);
+        apply_managed_proxy_env_to_command(&mut cmd);
+        if should_detach_child() {
+            cmd.stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+        }
+        if use_new_window {
+            cmd.arg("--new-window");
+        } else {
+            cmd.arg("--reuse-window");
+        }
+        for arg in extra_args {
+            let trimmed = arg.trim();
+            if !trimmed.is_empty() {
+                cmd.arg(trimmed);
+            }
+        }
+        let child = spawn_detached_unix(&mut cmd)
+            .map_err(|e| format!("启动 {} 失败: {}", kind.display_name(), e))?;
+        crate::modules::logger::log_info(&format!(
+            "[Qoder Instance] variant={} 默认实例启动命令已发送",
+            kind.provider_key()
+        ));
+        return Ok(child.id());
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        let _ = (kind, extra_args, use_new_window);
+        Err("Qoder 应用多开仅支持 macOS、Windows 和 Linux".to_string())
+    }
+}
+
 pub fn start_trae_with_args_with_new_window(
     user_data_dir: &str,
     extra_args: &[String],
@@ -1812,4 +2136,3 @@ tell application \"System Events\" to keystroke \"q\" using command down",
         let _ = pid;
     }
 }
-

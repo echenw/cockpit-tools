@@ -20,6 +20,9 @@ pub const PLATFORM_GROK: &str = "grok";
 pub const PLATFORM_CODEBUDDY: &str = "codebuddy";
 pub const PLATFORM_CODEBUDDY_CN: &str = "codebuddy_cn";
 pub const PLATFORM_QODER: &str = "qoder";
+pub const PLATFORM_QODER_APP: &str = "qoder_app";
+pub const PLATFORM_QODER_CN_IDE: &str = "qoder_cn_ide";
+pub const PLATFORM_QODER_CN_APP: &str = "qoder_cn_app";
 pub const PLATFORM_ZCODE: &str = "zcode";
 pub const PLATFORM_TRAE: &str = "trae";
 pub const PLATFORM_TRAE_SOLO: &str = "trae_solo";
@@ -27,7 +30,7 @@ pub const PLATFORM_TRAE_CN: &str = "trae_cn";
 pub const PLATFORM_TRAE_SOLO_CN: &str = "trae_solo_cn";
 pub const PLATFORM_WORKBUDDY: &str = "workbuddy";
 
-pub const SUPPORTED_PLATFORM_IDS: [&str; 18] = [
+pub const SUPPORTED_PLATFORM_IDS: [&str; 21] = [
     PLATFORM_CLAUDE_MANAGER,
     PLATFORM_CODEX,
     PLATFORM_ANTIGRAVITY,
@@ -40,6 +43,9 @@ pub const SUPPORTED_PLATFORM_IDS: [&str; 18] = [
     PLATFORM_CODEBUDDY,
     PLATFORM_CODEBUDDY_CN,
     PLATFORM_QODER,
+    PLATFORM_QODER_APP,
+    PLATFORM_QODER_CN_IDE,
+    PLATFORM_QODER_CN_APP,
     PLATFORM_ZCODE,
     PLATFORM_TRAE,
     PLATFORM_TRAE_SOLO,
@@ -53,6 +59,7 @@ pub const SORT_MODE_MANUAL: &str = "manual";
 
 const DEFAULT_CODEBUDDY_GROUP_ID: &str = "codebuddy-suite";
 const DEFAULT_TRAE_GROUP_ID: &str = "trae-suite";
+const DEFAULT_QODER_GROUP_ID: &str = "qoder-suite";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -117,6 +124,17 @@ fn default_platform_groups() -> Vec<TrayLayoutGroup> {
             ],
             default_platform_id: PLATFORM_TRAE.to_string(),
         },
+        TrayLayoutGroup {
+            id: DEFAULT_QODER_GROUP_ID.to_string(),
+            name: "Qoder".to_string(),
+            platform_ids: vec![
+                PLATFORM_QODER.to_string(),
+                PLATFORM_QODER_APP.to_string(),
+                PLATFORM_QODER_CN_IDE.to_string(),
+                PLATFORM_QODER_CN_APP.to_string(),
+            ],
+            default_platform_id: PLATFORM_QODER.to_string(),
+        },
     ]
 }
 
@@ -154,6 +172,9 @@ fn normalize_platform_id(id: &str) -> Option<&'static str> {
         PLATFORM_CODEBUDDY => Some(PLATFORM_CODEBUDDY),
         PLATFORM_CODEBUDDY_CN => Some(PLATFORM_CODEBUDDY_CN),
         PLATFORM_QODER => Some(PLATFORM_QODER),
+        PLATFORM_QODER_APP | "qoder-app" => Some(PLATFORM_QODER_APP),
+        PLATFORM_QODER_CN_IDE | "qoder-cn-ide" => Some(PLATFORM_QODER_CN_IDE),
+        PLATFORM_QODER_CN_APP | "qoder-cn-app" => Some(PLATFORM_QODER_CN_APP),
         PLATFORM_ZCODE => Some(PLATFORM_ZCODE),
         PLATFORM_TRAE => Some(PLATFORM_TRAE),
         PLATFORM_TRAE_SOLO | "trae-solo" => Some(PLATFORM_TRAE_SOLO),
@@ -215,6 +236,9 @@ fn normalize_tray_platforms(
         PLATFORM_CODEBUDDY,
         PLATFORM_CODEBUDDY_CN,
         PLATFORM_QODER,
+        PLATFORM_QODER_APP,
+        PLATFORM_QODER_CN_IDE,
+        PLATFORM_QODER_CN_APP,
         PLATFORM_ZCODE,
         PLATFORM_TRAE,
         PLATFORM_TRAE_SOLO,
@@ -363,6 +387,49 @@ fn normalize_platform_groups(groups: &[TrayLayoutGroup]) -> Vec<TrayLayoutGroup>
         }
     }
 
+    let qoder_suite_platforms = [
+        PLATFORM_QODER,
+        PLATFORM_QODER_APP,
+        PLATFORM_QODER_CN_IDE,
+        PLATFORM_QODER_CN_APP,
+    ];
+    if let Some(group) = normalized.iter_mut().find(|group| {
+        group
+            .platform_ids
+            .iter()
+            .any(|id| qoder_suite_platforms.contains(&id.as_str()))
+    }) {
+        for platform in qoder_suite_platforms {
+            if used_platforms.insert(platform.to_string()) {
+                group.platform_ids.push(platform.to_string());
+            }
+        }
+        if !group
+            .platform_ids
+            .iter()
+            .any(|id| id == &group.default_platform_id)
+        {
+            group.default_platform_id = PLATFORM_QODER.to_string();
+        }
+    } else {
+        let platform_ids: Vec<String> = qoder_suite_platforms
+            .iter()
+            .filter(|platform| !used_platforms.contains(**platform))
+            .map(|platform| (*platform).to_string())
+            .collect();
+        if !platform_ids.is_empty() {
+            let group_id =
+                normalize_group_id(DEFAULT_QODER_GROUP_ID, normalized.len(), &used_group_ids);
+            normalized.push(TrayLayoutGroup {
+                id: group_id.clone(),
+                name: "Qoder".to_string(),
+                platform_ids,
+                default_platform_id: PLATFORM_QODER.to_string(),
+            });
+            used_group_ids.insert(group_id);
+        }
+    }
+
     normalized
 }
 
@@ -468,6 +535,9 @@ fn normalize_config(
         PLATFORM_CODEBUDDY,
         PLATFORM_CODEBUDDY_CN,
         PLATFORM_QODER,
+        PLATFORM_QODER_APP,
+        PLATFORM_QODER_CN_IDE,
+        PLATFORM_QODER_CN_APP,
         PLATFORM_TRAE,
         PLATFORM_TRAE_SOLO,
         PLATFORM_TRAE_CN,
@@ -565,4 +635,202 @@ pub fn save_tray_layout(
     crate::modules::atomic_write::write_string_atomic(&path, &content)
         .map_err(|e| format!("保存托盘布局配置失败: {}", e))?;
     Ok(normalized)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    struct DataDirGuard {
+        dir: PathBuf,
+        previous_data_dir: Option<String>,
+    }
+
+    impl DataDirGuard {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "cockpit-tray-layout-{}-{}",
+                name,
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).expect("create temp data dir");
+            let previous_data_dir = std::env::var("COCKPIT_TOOLS_DATA_DIR").ok();
+            std::env::set_var("COCKPIT_TOOLS_DATA_DIR", &dir);
+            Self {
+                dir,
+                previous_data_dir,
+            }
+        }
+    }
+
+    impl Drop for DataDirGuard {
+        fn drop(&mut self) {
+            match self.previous_data_dir.as_ref() {
+                Some(value) => std::env::set_var("COCKPIT_TOOLS_DATA_DIR", value),
+                None => std::env::remove_var("COCKPIT_TOOLS_DATA_DIR"),
+            }
+            let _ = fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    const QODER_SUITE_MEMBERS: [&str; 4] = [
+        PLATFORM_QODER,
+        PLATFORM_QODER_APP,
+        PLATFORM_QODER_CN_IDE,
+        PLATFORM_QODER_CN_APP,
+    ];
+
+    fn frontend_shaped_groups() -> Vec<TrayLayoutGroup> {
+        vec![
+            TrayLayoutGroup {
+                id: DEFAULT_CODEBUDDY_GROUP_ID.to_string(),
+                name: "CodeBuddy".to_string(),
+                platform_ids: vec![
+                    PLATFORM_CODEBUDDY.to_string(),
+                    PLATFORM_CODEBUDDY_CN.to_string(),
+                    PLATFORM_WORKBUDDY.to_string(),
+                ],
+                default_platform_id: PLATFORM_CODEBUDDY.to_string(),
+            },
+            TrayLayoutGroup {
+                id: DEFAULT_TRAE_GROUP_ID.to_string(),
+                name: "Trae".to_string(),
+                platform_ids: vec![
+                    PLATFORM_TRAE.to_string(),
+                    PLATFORM_TRAE_SOLO.to_string(),
+                    PLATFORM_TRAE_CN.to_string(),
+                    PLATFORM_TRAE_SOLO_CN.to_string(),
+                ],
+                default_platform_id: PLATFORM_TRAE.to_string(),
+            },
+            TrayLayoutGroup {
+                id: DEFAULT_QODER_GROUP_ID.to_string(),
+                name: "Qoder".to_string(),
+                platform_ids: QODER_SUITE_MEMBERS.iter().map(|id| (*id).to_string()).collect(),
+                default_platform_id: PLATFORM_QODER.to_string(),
+            },
+        ]
+    }
+
+    fn config_json(config: &TrayLayoutConfig) -> serde_json::Value {
+        serde_json::to_value(config).expect("serialize tray layout config")
+    }
+
+    #[test]
+    fn qoder_suite_layout_round_trips_losslessly_through_save_and_load() {
+        let _lock = crate::modules::test_support::env_lock()
+            .lock()
+            .expect("lock env");
+        let _guard = DataDirGuard::new("qoder-round-trip");
+
+        let saved = save_tray_layout(
+            SORT_MODE_MANUAL.to_string(),
+            default_order(),
+            default_order(),
+            None,
+            Some(frontend_shaped_groups()),
+        )
+        .expect("save frontend-shaped layout");
+
+        for member in QODER_SUITE_MEMBERS {
+            assert!(
+                saved.tray_platform_ids.iter().any(|id| id == member),
+                "tray_platform_ids lost {member}: {:?}",
+                saved.tray_platform_ids
+            );
+            assert!(
+                saved.ordered_platform_ids.iter().any(|id| id == member),
+                "ordered_platform_ids lost {member}"
+            );
+        }
+
+        let qoder_group = saved
+            .platform_groups
+            .iter()
+            .find(|group| group.id == DEFAULT_QODER_GROUP_ID)
+            .expect("qoder-suite group should survive normalization");
+        assert_eq!(
+            qoder_group.platform_ids,
+            QODER_SUITE_MEMBERS
+                .iter()
+                .map(|id| (*id).to_string())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(qoder_group.default_platform_id, PLATFORM_QODER);
+        assert!(saved
+            .ordered_entry_ids
+            .iter()
+            .any(|entry| entry == &format!("group:{}", DEFAULT_QODER_GROUP_ID)));
+
+        let saved_json = config_json(&saved);
+        let reloaded = load_tray_layout();
+        assert_eq!(
+            config_json(&reloaded),
+            saved_json,
+            "load_tray_layout must round-trip the saved layout losslessly"
+        );
+
+        let resaved = save_tray_layout(
+            reloaded.sort_mode.clone(),
+            reloaded.ordered_platform_ids.clone(),
+            reloaded.tray_platform_ids.clone(),
+            Some(reloaded.ordered_entry_ids.clone()),
+            Some(reloaded.platform_groups.clone()),
+        )
+        .expect("re-save restored layout");
+        assert_eq!(
+            config_json(&resaved),
+            saved_json,
+            "save_tray_layout must be idempotent for an already-normalized layout"
+        );
+    }
+
+    #[test]
+    fn legacy_qoder_only_layout_still_loads_and_keeps_qoder() {
+        let legacy = TrayLayoutConfig {
+            sort_mode: SORT_MODE_AUTO.to_string(),
+            ordered_platform_ids: vec![
+                PLATFORM_ANTIGRAVITY.to_string(),
+                PLATFORM_CODEX.to_string(),
+                PLATFORM_GITHUB_COPILOT.to_string(),
+                PLATFORM_WINDSURF.to_string(),
+                PLATFORM_QODER.to_string(),
+            ],
+            tray_platform_ids: vec![PLATFORM_QODER.to_string()],
+            ordered_entry_ids: vec!["platform:qoder".to_string()],
+            platform_groups: vec![TrayLayoutGroup {
+                id: "platform-qoder".to_string(),
+                name: "Qoder".to_string(),
+                platform_ids: vec![PLATFORM_QODER.to_string()],
+                default_platform_id: PLATFORM_QODER.to_string(),
+            }],
+        };
+
+        let normalized = normalize_config(legacy, true);
+
+        assert!(normalized
+            .ordered_platform_ids
+            .iter()
+            .any(|id| id == PLATFORM_QODER));
+        assert!(normalized
+            .tray_platform_ids
+            .iter()
+            .any(|id| id == PLATFORM_QODER));
+
+        let qoder_group = normalized
+            .platform_groups
+            .iter()
+            .find(|group| group.platform_ids.iter().any(|id| id == PLATFORM_QODER))
+            .expect("qoder group must exist after normalization");
+        assert_eq!(qoder_group.default_platform_id, PLATFORM_QODER);
+        for member in [PLATFORM_QODER_APP, PLATFORM_QODER_CN_IDE, PLATFORM_QODER_CN_APP] {
+            assert!(
+                qoder_group.platform_ids.iter().any(|id| id == member),
+                "qoder group should be completed with {member}: {:?}",
+                qoder_group.platform_ids
+            );
+        }
+    }
 }

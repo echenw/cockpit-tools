@@ -316,14 +316,25 @@ fn spawn_refresh(platform: PlatformId, account_id: Option<String>) {
             (PlatformId::CodebuddyCn, None) => {
                 commands::codebuddy_cn::refresh_all_codebuddy_cn_tokens(app.clone()).await
             }
-            (PlatformId::Qoder, Some(account_id)) => {
-                commands::qoder::refresh_qoder_token(app.clone(), account_id)
+            // 菜单入口不含变体上下文：单账号按账号自身 variant 路由，全量刷新覆盖全部变体。
+            (
+                PlatformId::Qoder
+                | PlatformId::QoderApp
+                | PlatformId::QoderCnIde
+                | PlatformId::QoderCnApp,
+                Some(account_id),
+            ) => {
+                commands::qoder::refresh_qoder_token(app.clone(), account_id, None)
                     .await
                     .map(|_| 0)
             }
-            (PlatformId::Qoder, None) => {
-                commands::qoder::refresh_all_qoder_tokens(app.clone()).await
-            }
+            (
+                PlatformId::Qoder
+                | PlatformId::QoderApp
+                | PlatformId::QoderCnIde
+                | PlatformId::QoderCnApp,
+                None,
+            ) => commands::qoder::refresh_all_qoder_tokens(app.clone(), None).await,
             (PlatformId::Zcode, Some(account_id)) => {
                 commands::zcode::refresh_zcode_account(app.clone(), account_id)
                     .await
@@ -435,9 +446,18 @@ fn spawn_switch_account(platform: PlatformId, account_id: String) {
                     .await
                     .map(|_| ())
             }
-            PlatformId::Qoder => commands::qoder::inject_qoder_account(app, account_id)
+            PlatformId::Qoder
+            | PlatformId::QoderApp
+            | PlatformId::QoderCnIde
+            | PlatformId::QoderCnApp => {
+                commands::qoder::inject_qoder_account(
+                    app,
+                    account_id,
+                    Some(platform.as_str().to_string()),
+                )
                 .await
-                .map(|_| ()),
+                .map(|_| ())
+            }
             PlatformId::Zcode => commands::zcode::inject_zcode_account(app, account_id).map(|_| ()),
             PlatformId::Trae
             | PlatformId::TraeSolo

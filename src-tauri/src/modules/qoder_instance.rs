@@ -9,6 +9,7 @@ use crate::models::{DefaultInstanceSettings, InstanceProfile, InstanceStore};
 use crate::modules;
 use crate::modules::instance::InstanceDefaults;
 use crate::modules::instance_store;
+use crate::modules::qoder_variant::QoderVariantKind;
 
 pub use crate::modules::instance_store::{CreateInstanceParams, UpdateInstanceParams};
 
@@ -17,23 +18,61 @@ static QODER_INSTANCE_STORE_LOCK: std::sync::LazyLock<Mutex<()>> =
 
 const QODER_INSTANCES_FILE: &str = "qoder_instances.json";
 
-fn instances_path() -> Result<PathBuf, String> {
+fn instances_file_for_variant(kind: QoderVariantKind) -> &'static str {
+    match kind {
+        QoderVariantKind::Qoder => QODER_INSTANCES_FILE,
+        QoderVariantKind::QoderCnIde => "qoder_cn_ide_instances.json",
+        // App 系不支持实例管理（官方单实例限制），入口 ensure_variant_supports_instances 已拦截。
+        QoderVariantKind::QoderApp => "qoder_app_instances.json",
+        QoderVariantKind::QoderCnApp => "qoder_cn_app_instances.json",
+    }
+}
+
+fn ensure_variant_supports_instances(kind: QoderVariantKind) -> Result<(), String> {
+    if kind.supports_instances() {
+        return Ok(());
+    }
+    Err(format!(
+        "{} 客户端不支持应用多开（官方单实例机制），实例管理仅服务 Qoder IDE 与 Qoder CN IDE",
+        kind.display_name()
+    ))
+}
+
+fn instances_path_for_variant(kind: QoderVariantKind) -> Result<PathBuf, String> {
+    ensure_variant_supports_instances(kind)?;
     let data_dir = modules::account::get_data_dir()?;
-    Ok(data_dir.join(QODER_INSTANCES_FILE))
+    Ok(data_dir.join(instances_file_for_variant(kind)))
 }
 
 pub fn load_instance_store() -> Result<InstanceStore, String> {
-    let path = instances_path()?;
-    instance_store::load_instance_store(&path, QODER_INSTANCES_FILE)
+    load_instance_store_for_variant(QoderVariantKind::Qoder)
+}
+
+pub fn load_instance_store_for_variant(kind: QoderVariantKind) -> Result<InstanceStore, String> {
+    let path = instances_path_for_variant(kind)?;
+    instance_store::load_instance_store(&path, instances_file_for_variant(kind))
 }
 
 pub fn save_instance_store(store: &InstanceStore) -> Result<(), String> {
-    let path = instances_path()?;
-    instance_store::save_instance_store(&path, QODER_INSTANCES_FILE, store)
+    save_instance_store_for_variant(QoderVariantKind::Qoder, store)
+}
+
+pub fn save_instance_store_for_variant(
+    kind: QoderVariantKind,
+    store: &InstanceStore,
+) -> Result<(), String> {
+    let path = instances_path_for_variant(kind)?;
+    instance_store::save_instance_store(&path, instances_file_for_variant(kind), store)
 }
 
 pub fn load_default_settings() -> Result<DefaultInstanceSettings, String> {
-    let store = load_instance_store()?;
+    load_default_settings_for_variant(QoderVariantKind::Qoder)
+}
+
+pub fn load_default_settings_for_variant(
+    kind: QoderVariantKind,
+) -> Result<DefaultInstanceSettings, String> {
+    let store = load_instance_store_for_variant(kind)?;
     Ok(store.default_settings)
 }
 
@@ -42,10 +81,24 @@ pub fn update_default_settings(
     extra_args: Option<String>,
     follow_local_account: Option<bool>,
 ) -> Result<DefaultInstanceSettings, String> {
+    update_default_settings_for_variant(
+        QoderVariantKind::Qoder,
+        bind_account_id,
+        extra_args,
+        follow_local_account,
+    )
+}
+
+pub fn update_default_settings_for_variant(
+    kind: QoderVariantKind,
+    bind_account_id: Option<Option<String>>,
+    extra_args: Option<String>,
+    follow_local_account: Option<bool>,
+) -> Result<DefaultInstanceSettings, String> {
     let _lock = QODER_INSTANCE_STORE_LOCK
         .lock()
         .map_err(|_| "无法获取实例锁")?;
-    let mut store = load_instance_store()?;
+    let mut store = load_instance_store_for_variant(kind)?;
     let settings = &mut store.default_settings;
 
     // Qoder 实例不支持“跟随当前账号”，直接忽略 follow_local_account。
@@ -63,28 +116,30 @@ pub fn update_default_settings(
     }
 
     let updated = settings.clone();
-    save_instance_store(&store)?;
+    save_instance_store_for_variant(kind, &store)?;
     Ok(updated)
 }
 
 pub fn get_default_qoder_user_data_dir() -> Result<PathBuf, String> {
+    get_default_qoder_user_data_dir_for_variant(QoderVariantKind::Qoder)
+}
+
+pub fn get_default_qoder_user_data_dir_for_variant(kind: QoderVariantKind) -> Result<PathBuf, String> {
+    use crate::modules::qoder_platform_paths as qpp;
     #[cfg(target_os = "macos")]
     {
         let home = dirs::home_dir().ok_or("无法获取用户主目录")?;
-        return Ok(home.join("Library/Application Support/Qoder"));
+        return Ok(qpp::macos_data_dir_with_home(kind, &home));
     }
 
     #[cfg(target_os = "windows")]
     {
-        let appdata =
-            std::env::var("APPDATA").map_err(|_| "无法获取 APPDATA 环境变量".to_string())?;
-        return Ok(PathBuf::from(appdata).join("Qoder"));
+        return qpp::windows_data_dir(kind);
     }
 
     #[cfg(target_os = "linux")]
     {
-        let home = dirs::home_dir().ok_or("无法获取用户主目录")?;
-        return Ok(home.join(".config/Qoder"));
+        return qpp::linux_data_dir(kind);
     }
 
     #[allow(unreachable_code)]
@@ -92,12 +147,21 @@ pub fn get_default_qoder_user_data_dir() -> Result<PathBuf, String> {
 }
 
 pub fn get_default_instances_root_dir() -> Result<PathBuf, String> {
-    crate::modules::data_paths::managed_instances_root_dir("qoder")
+    get_default_instances_root_dir_for_variant(QoderVariantKind::Qoder)
+}
+
+pub fn get_default_instances_root_dir_for_variant(kind: QoderVariantKind) -> Result<PathBuf, String> {
+    ensure_variant_supports_instances(kind)?;
+    crate::modules::data_paths::managed_instances_root_dir(kind.provider_key())
 }
 
 pub fn get_instance_defaults() -> Result<InstanceDefaults, String> {
-    let root_dir = get_default_instances_root_dir()?;
-    let default_user_data_dir = get_default_qoder_user_data_dir()?;
+    get_instance_defaults_for_variant(QoderVariantKind::Qoder)
+}
+
+pub fn get_instance_defaults_for_variant(kind: QoderVariantKind) -> Result<InstanceDefaults, String> {
+    let root_dir = get_default_instances_root_dir_for_variant(kind)?;
+    let default_user_data_dir = get_default_qoder_user_data_dir_for_variant(kind)?;
     Ok(InstanceDefaults {
         root_dir: root_dir.to_string_lossy().to_string(),
         default_user_data_dir: default_user_data_dir.to_string_lossy().to_string(),
@@ -105,11 +169,18 @@ pub fn get_instance_defaults() -> Result<InstanceDefaults, String> {
 }
 
 pub fn create_instance(params: CreateInstanceParams) -> Result<InstanceProfile, String> {
+    create_instance_for_variant(QoderVariantKind::Qoder, params)
+}
+
+pub fn create_instance_for_variant(
+    kind: QoderVariantKind,
+    params: CreateInstanceParams,
+) -> Result<InstanceProfile, String> {
     let _creation_guard = crate::modules::instance_storage_cleanup::protect_instance_creation()?;
     let _lock = QODER_INSTANCE_STORE_LOCK
         .lock()
         .map_err(|_| "无法获取实例锁")?;
-    let mut store = load_instance_store()?;
+    let mut store = load_instance_store_for_variant(kind)?;
 
     let name = instance_store::normalize_name(&params.name)?;
     let user_data_dir = params.user_data_dir.trim().to_string();
@@ -152,7 +223,7 @@ pub fn create_instance(params: CreateInstanceParams) -> Result<InstanceProfile, 
         fs::create_dir_all(&user_dir_path).map_err(|e| format!("创建实例目录失败: {}", e))?;
     } else {
         let source_dir = match params.copy_source_instance_id.as_deref() {
-            Some("__default__") | None => get_default_qoder_user_data_dir()?,
+            Some("__default__") | None => get_default_qoder_user_data_dir_for_variant(kind)?,
             Some(source_id) => {
                 let source_instance = store
                     .instances
@@ -207,15 +278,22 @@ pub fn create_instance(params: CreateInstanceParams) -> Result<InstanceProfile, 
     };
 
     store.instances.push(instance.clone());
-    save_instance_store(&store)?;
+    save_instance_store_for_variant(kind, &store)?;
     Ok(instance)
 }
 
 pub fn update_instance(params: UpdateInstanceParams) -> Result<InstanceProfile, String> {
+    update_instance_for_variant(QoderVariantKind::Qoder, params)
+}
+
+pub fn update_instance_for_variant(
+    kind: QoderVariantKind,
+    params: UpdateInstanceParams,
+) -> Result<InstanceProfile, String> {
     let _lock = QODER_INSTANCE_STORE_LOCK
         .lock()
         .map_err(|_| "无法获取实例锁")?;
-    let mut store = load_instance_store()?;
+    let mut store = load_instance_store_for_variant(kind)?;
     let index = store
         .instances
         .iter()
@@ -246,16 +324,23 @@ pub fn update_instance(params: UpdateInstanceParams) -> Result<InstanceProfile, 
     }
 
     let updated = instance.clone();
-    save_instance_store(&store)?;
+    save_instance_store_for_variant(kind, &store)?;
     Ok(updated)
 }
 
 pub fn delete_instance(instance_id: &str) -> Result<(), String> {
+    delete_instance_for_variant(QoderVariantKind::Qoder, instance_id)
+}
+
+pub fn delete_instance_for_variant(
+    kind: QoderVariantKind,
+    instance_id: &str,
+) -> Result<(), String> {
     let _creation_guard = crate::modules::instance_storage_cleanup::protect_instance_creation()?;
     let _lock = QODER_INSTANCE_STORE_LOCK
         .lock()
         .map_err(|_| "无法获取实例锁")?;
-    let mut store = load_instance_store()?;
+    let mut store = load_instance_store_for_variant(kind)?;
     let index = store
         .instances
         .iter()
@@ -269,15 +354,23 @@ pub fn delete_instance(instance_id: &str) -> Result<(), String> {
     }
 
     store.instances.remove(index);
-    save_instance_store(&store)?;
+    save_instance_store_for_variant(kind, &store)?;
     Ok(())
 }
 
 pub fn update_instance_after_start(instance_id: &str, pid: u32) -> Result<InstanceProfile, String> {
+    update_instance_after_start_for_variant(QoderVariantKind::Qoder, instance_id, pid)
+}
+
+pub fn update_instance_after_start_for_variant(
+    kind: QoderVariantKind,
+    instance_id: &str,
+    pid: u32,
+) -> Result<InstanceProfile, String> {
     let _lock = QODER_INSTANCE_STORE_LOCK
         .lock()
         .map_err(|_| "无法获取实例锁")?;
-    let mut store = load_instance_store()?;
+    let mut store = load_instance_store_for_variant(kind)?;
     let mut updated = None;
     for instance in &mut store.instances {
         if instance.id == instance_id {
@@ -288,15 +381,23 @@ pub fn update_instance_after_start(instance_id: &str, pid: u32) -> Result<Instan
         }
     }
     let updated = updated.ok_or("实例不存在")?;
-    save_instance_store(&store)?;
+    save_instance_store_for_variant(kind, &store)?;
     Ok(updated)
 }
 
 pub fn update_instance_pid(instance_id: &str, pid: Option<u32>) -> Result<InstanceProfile, String> {
+    update_instance_pid_for_variant(QoderVariantKind::Qoder, instance_id, pid)
+}
+
+pub fn update_instance_pid_for_variant(
+    kind: QoderVariantKind,
+    instance_id: &str,
+    pid: Option<u32>,
+) -> Result<InstanceProfile, String> {
     let _lock = QODER_INSTANCE_STORE_LOCK
         .lock()
         .map_err(|_| "无法获取实例锁")?;
-    let mut store = load_instance_store()?;
+    let mut store = load_instance_store_for_variant(kind)?;
     let mut updated = None;
     for instance in &mut store.instances {
         if instance.id == instance_id {
@@ -306,30 +407,41 @@ pub fn update_instance_pid(instance_id: &str, pid: Option<u32>) -> Result<Instan
         }
     }
     let updated = updated.ok_or("实例不存在")?;
-    save_instance_store(&store)?;
+    save_instance_store_for_variant(kind, &store)?;
     Ok(updated)
 }
 
 pub fn update_default_pid(pid: Option<u32>) -> Result<DefaultInstanceSettings, String> {
+    update_default_pid_for_variant(QoderVariantKind::Qoder, pid)
+}
+
+pub fn update_default_pid_for_variant(
+    kind: QoderVariantKind,
+    pid: Option<u32>,
+) -> Result<DefaultInstanceSettings, String> {
     let _lock = QODER_INSTANCE_STORE_LOCK
         .lock()
         .map_err(|_| "无法获取实例锁")?;
-    let mut store = load_instance_store()?;
+    let mut store = load_instance_store_for_variant(kind)?;
     store.default_settings.last_pid = pid;
     let updated = store.default_settings.clone();
-    save_instance_store(&store)?;
+    save_instance_store_for_variant(kind, &store)?;
     Ok(updated)
 }
 
 pub fn clear_all_pids() -> Result<(), String> {
+    clear_all_pids_for_variant(QoderVariantKind::Qoder)
+}
+
+pub fn clear_all_pids_for_variant(kind: QoderVariantKind) -> Result<(), String> {
     let _lock = QODER_INSTANCE_STORE_LOCK
         .lock()
         .map_err(|_| "无法获取实例锁")?;
-    let mut store = load_instance_store()?;
+    let mut store = load_instance_store_for_variant(kind)?;
     store.default_settings.last_pid = None;
     for instance in &mut store.instances {
         instance.last_pid = None;
     }
-    save_instance_store(&store)?;
+    save_instance_store_for_variant(kind, &store)?;
     Ok(())
 }

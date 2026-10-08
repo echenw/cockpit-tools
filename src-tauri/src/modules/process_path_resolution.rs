@@ -1367,17 +1367,66 @@ fn detect_codebuddy_cn_exec_path() -> Option<std::path::PathBuf> {
     None
 }
 
+/// macOS IDE 启动路径候选（纯函数，便于单测排序）。
+///
+/// 当前官方 IDE 包为 `Qoder IDE.app`（bundle `com.qoder.ide`）。
+#[cfg(target_os = "macos")]
+fn qoder_macos_exec_candidates() -> Vec<std::path::PathBuf> {
+    [
+        // 当前官方 IDE 包（优先）。
+        "/Applications/Qoder IDE.app/Contents/MacOS/Qoder",
+        "/Applications/Qoder IDE.app/Contents/MacOS/Qoder IDE",
+        "/Applications/Qoder IDE.app/Contents/MacOS/Electron",
+        "/Applications/Qoder IDE.app",
+    ]
+    .iter()
+    .map(std::path::PathBuf::from)
+    .collect()
+}
+
+/// 同名 App 与旧 IDE 必须同时按包名和 bundle 身份区分，包括自定义路径。
+#[cfg(target_os = "macos")]
+fn is_qoder_variant_bundle(
+    kind: crate::modules::qoder_variant::QoderVariantKind,
+    path: &std::path::Path,
+) -> bool {
+    let Some(root) = normalize_macos_app_root(path) else { return false; };
+    let table = crate::modules::qoder_platform_paths::qoder_platform_table(kind);
+    if std::path::Path::new(&root).file_name().and_then(|name| name.to_str())
+        != Some(table.macos_app_bundle)
+    {
+        return false;
+    }
+    if !table.macos_app_binaries.iter().any(|binary| {
+        std::path::Path::new(&root)
+            .join("Contents/MacOS")
+            .join(binary)
+            .is_file()
+    }) {
+        return false;
+    }
+    let output = Command::new("/usr/bin/plutil")
+        .args(["-extract", "CFBundleIdentifier", "raw", "-o", "-"])
+        .arg(std::path::Path::new(&root).join("Contents/Info.plist"))
+        .output();
+    match output {
+        Ok(output) if output.status.success() => {
+            String::from_utf8_lossy(&output.stdout).trim() == table.macos_bundle_id
+        }
+        _ => false,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn is_qoder_ide_bundle(path: &std::path::Path) -> bool {
+    is_qoder_variant_bundle(crate::modules::qoder_variant::QoderVariantKind::Qoder, path)
+}
+
 fn detect_qoder_exec_path() -> Option<std::path::PathBuf> {
     #[cfg(target_os = "macos")]
     {
-        let candidates = [
-            "/Applications/Qoder.app/Contents/MacOS/Qoder",
-            "/Applications/Qoder.app/Contents/MacOS/Electron",
-            "/Applications/Qoder.app",
-        ];
-        for candidate in candidates {
-            let path = std::path::PathBuf::from(candidate);
-            if path.exists() {
+        for path in qoder_macos_exec_candidates() {
+            if path.exists() && is_qoder_ide_bundle(&path) {
                 return Some(path);
             }
         }
@@ -1385,41 +1434,203 @@ fn detect_qoder_exec_path() -> Option<std::path::PathBuf> {
 
     #[cfg(target_os = "windows")]
     {
-        let mut candidates: Vec<std::path::PathBuf> = Vec::new();
-        if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
-            candidates.push(
-                std::path::PathBuf::from(&local_appdata)
-                    .join("Programs")
-                    .join("Qoder")
-                    .join("Qoder.exe"),
-            );
-        }
-        if let Ok(program_files) = std::env::var("PROGRAMFILES") {
-            candidates.push(
-                std::path::PathBuf::from(program_files)
-                    .join("Qoder")
-                    .join("Qoder.exe"),
-            );
-        }
-        for candidate in candidates {
-            if can_probe_passive_windows_path(&candidate.to_string_lossy()) && candidate.exists() {
-                return Some(candidate);
+        if let Ok(candidates) = crate::modules::qoder_platform_paths::windows_install_candidates(
+            crate::modules::qoder_variant::QoderVariantKind::Qoder,
+        ) {
+            for candidate in candidates {
+                if can_probe_passive_windows_path(&candidate.to_string_lossy())
+                    && candidate.is_file()
+                {
+                    return Some(candidate);
+                }
             }
         }
+        let table = crate::modules::qoder_platform_paths::qoder_platform_table(
+            crate::modules::qoder_variant::QoderVariantKind::Qoder,
+        );
+        return detect_windows_exec_path_by_signatures_filtered(
+            "Qoder IDE",
+            table.windows_exes,
+            &[],
+            &[],
+            &["Qoder IDE"],
+            &|path| crate::modules::qoder_platform_paths::windows_candidate_matches_variant(
+                crate::modules::qoder_variant::QoderVariantKind::Qoder, path,
+            ),
+        );
     }
 
     #[cfg(target_os = "linux")]
     {
-        let candidates = ["/usr/bin/qoder", "/usr/local/bin/qoder", "/opt/qoder/qoder"];
-        for candidate in candidates {
-            let path = std::path::PathBuf::from(candidate);
-            if path.exists() {
-                return Some(path);
+        if let Ok(candidates) = crate::modules::qoder_platform_paths::linux_install_candidates(
+            crate::modules::qoder_variant::QoderVariantKind::Qoder,
+        ) {
+            for candidate in candidates {
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
             }
         }
     }
 
     None
+}
+
+// 按变体探测可执行路径（参数表见 qoder_platform_paths）。
+// Windows 尾部复用共享多源签名探测；macOS 按 bundle ID 核验。
+fn detect_qoder_exec_path_for_variant(
+    kind: crate::modules::qoder_variant::QoderVariantKind,
+) -> Option<std::path::PathBuf> {
+    use crate::modules::qoder_platform_paths as qpp;
+    #[cfg(target_os = "macos")]
+    {
+        for candidate in qpp::macos_exec_candidates(kind) {
+            if candidate.exists() && is_qoder_variant_bundle(kind, &candidate) {
+                return Some(candidate);
+            }
+        }
+        return None;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(candidates) = qpp::windows_launch_candidates(kind) {
+            for candidate in candidates {
+                if can_probe_passive_windows_path(&candidate.to_string_lossy())
+                    && candidate.is_file()
+                {
+                    return Some(candidate);
+                }
+            }
+        }
+        let table = qpp::qoder_platform_table(kind);
+        let display = kind.display_name();
+        return detect_windows_exec_path_by_signatures_filtered(
+            display,
+            table.windows_launch_exes,
+            &[],
+            &[],
+            &[display],
+            &|path| qpp::windows_candidate_matches_variant(kind, path),
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(candidates) = qpp::linux_install_candidates(kind) {
+            for candidate in candidates {
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+        return None;
+    }
+
+    #[allow(unreachable_code)]
+    None
+}
+
+/// 变体客户端 .app 包名（纯函数；映射源头 = qoder_platform_paths 平台表）。
+#[cfg(target_os = "macos")]
+fn qoder_variant_client_bundle(
+    kind: crate::modules::qoder_variant::QoderVariantKind,
+) -> &'static str {
+    crate::modules::qoder_platform_paths::qoder_platform_table(kind).macos_app_bundle
+}
+
+/// 变体客户端启动路径解析，切号前用它确认目标客户端存在。
+fn qoder_configured_app_path<'a>(
+    current: &'a config::UserConfig,
+    kind: crate::modules::qoder_variant::QoderVariantKind,
+) -> &'a str {
+    match kind {
+        crate::modules::qoder_variant::QoderVariantKind::Qoder => current.qoder_app_path.as_str(),
+        crate::modules::qoder_variant::QoderVariantKind::QoderApp => {
+            current.qoder_app_variant_path.as_str()
+        }
+        crate::modules::qoder_variant::QoderVariantKind::QoderCnIde => {
+            current.qoder_cn_ide_app_path.as_str()
+        }
+        crate::modules::qoder_variant::QoderVariantKind::QoderCnApp => {
+            current.qoder_cn_app_path.as_str()
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_qoder_variant_custom_exec_path(
+    kind: crate::modules::qoder_variant::QoderVariantKind,
+    path_str: &str,
+) -> Option<std::path::PathBuf> {
+    let path = std::path::PathBuf::from(path_str);
+    if !is_qoder_variant_bundle(kind, &path) {
+        return None;
+    }
+    let app_root = normalize_macos_app_root(&path)?;
+    let macos_dir = std::path::PathBuf::from(app_root).join("Contents").join("MacOS");
+    let table = crate::modules::qoder_platform_paths::qoder_platform_table(kind);
+    table
+        .macos_app_binaries
+        .iter()
+        .map(|name| macos_dir.join(name))
+        .find(|candidate| candidate.is_file())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn resolve_qoder_variant_custom_exec_path(
+    kind: crate::modules::qoder_variant::QoderVariantKind,
+    path_str: &str,
+) -> Option<std::path::PathBuf> {
+    let path = std::path::PathBuf::from(path_str);
+    if !path.is_file() {
+        return None;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        return crate::modules::qoder_platform_paths::windows_candidate_matches_variant(kind, &path)
+            .then_some(path);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        crate::modules::qoder_platform_paths::linux_candidate_matches_variant(kind, &path)
+            .then_some(path)
+    }
+}
+
+fn resolve_qoder_variant_launch_path(
+    kind: crate::modules::qoder_variant::QoderVariantKind,
+) -> Result<std::path::PathBuf, String> {
+    if kind != crate::modules::qoder_variant::QoderVariantKind::Qoder {
+        let current = config::get_user_config();
+        let configured = qoder_configured_app_path(&current, kind);
+        if let Some(custom) = normalize_custom_path(Some(configured)) {
+            if let Some(exec) = resolve_qoder_variant_custom_exec_path(kind, &custom) {
+                return Ok(exec);
+            }
+            return Err(app_path_missing_error(kind.provider_key()));
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let bundle_root = std::path::PathBuf::from("/Applications").join(qoder_variant_client_bundle(kind));
+        if bundle_root.exists() && is_qoder_variant_bundle(kind, &bundle_root) {
+            return Ok(bundle_root);
+        }
+    }
+    if kind == crate::modules::qoder_variant::QoderVariantKind::Qoder {
+        return resolve_qoder_launch_path();
+    }
+    if let Some(detected) = detect_qoder_exec_path_for_variant(kind) {
+        return Ok(detected);
+    }
+    Err(app_path_missing_error(kind.provider_key()))
+}
+
+pub fn ensure_qoder_variant_launch_path(
+    kind: crate::modules::qoder_variant::QoderVariantKind,
+) -> Result<(), String> {
+    resolve_qoder_variant_launch_path(kind).map(|_| ())
 }
 
 fn detect_zcode_exec_path() -> Option<std::path::PathBuf> {
@@ -1833,6 +2044,9 @@ fn resolve_codebuddy_cn_macos_exec_path(path_str: &str) -> Option<std::path::Pat
 #[cfg(target_os = "macos")]
 fn resolve_qoder_macos_exec_path(path_str: &str) -> Option<std::path::PathBuf> {
     let path = std::path::PathBuf::from(path_str);
+    if !is_qoder_ide_bundle(&path) {
+        return None;
+    }
     if let Some(app_root) = normalize_macos_app_root(&path) {
         let app_root_path = std::path::PathBuf::from(&app_root);
         let macos_dir = app_root_path.join("Contents").join("MacOS");
@@ -2025,6 +2239,29 @@ fn resolve_workbuddy_macos_exec_path(path_str: &str) -> Option<std::path::PathBu
 #[cfg(not(target_os = "macos"))]
 fn resolve_qoder_macos_exec_path(path_str: &str) -> Option<std::path::PathBuf> {
     resolve_macos_exec_path(path_str, "Qoder")
+}
+
+#[cfg(not(target_os = "macos"))]
+fn is_current_qoder_ide_exec_path(path: &std::path::Path) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        return crate::modules::qoder_platform_paths::windows_candidate_matches_variant(
+            crate::modules::qoder_variant::QoderVariantKind::Qoder,
+            path,
+        );
+    }
+    #[cfg(target_os = "linux")]
+    {
+        return crate::modules::qoder_platform_paths::linux_candidate_matches_variant(
+            crate::modules::qoder_variant::QoderVariantKind::Qoder,
+            path,
+        );
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        let _ = path;
+        false
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -2911,6 +3148,10 @@ fn resolve_codebuddy_cn_launch_path() -> Result<std::path::PathBuf, String> {
 fn resolve_qoder_launch_path() -> Result<std::path::PathBuf, String> {
     if let Some(custom) = normalize_custom_path(Some(&config::get_user_config().qoder_app_path)) {
         if let Some(exec) = resolve_qoder_macos_exec_path(&custom) {
+            #[cfg(not(target_os = "macos"))]
+            if !is_current_qoder_ide_exec_path(&exec) {
+                return Err(app_path_missing_error("qoder"));
+            }
             return Ok(exec);
         }
         return Err(app_path_missing_error("qoder"));
@@ -2926,7 +3167,7 @@ fn resolve_qoder_launch_path() -> Result<std::path::PathBuf, String> {
             return Ok(detected);
         }
         #[cfg(not(target_os = "macos"))]
-        if detected.exists() {
+        if detected.is_file() && is_current_qoder_ide_exec_path(&detected) {
             return Ok(detected);
         }
     }
@@ -3244,14 +3485,19 @@ fn detect_and_save_app_path_raw(app: &str, force: bool) -> Option<String> {
                 return Some(config::get_user_config().codebuddy_cn_app_path);
             }
         }
-        "qoder" => {
-            if !force && !current.qoder_app_path.trim().is_empty() {
-                return Some(current.qoder_app_path);
+        "qoder" | "qoder_app" | "qoder_cn_ide" | "qoder_cn_app" => {
+            let kind = crate::modules::qoder_variant::QoderVariantKind::parse(Some(app)).ok()?;
+            let configured = qoder_configured_app_path(&current, kind).to_string();
+            if !force && !configured.trim().is_empty() {
+                return Some(configured);
             }
-            if let Some(detected) = detect_qoder_exec_path() {
-                update_app_path_in_config("qoder", &detected, &current.qoder_app_path);
-                return Some(config::get_user_config().qoder_app_path);
-            }
+            let detected = if kind == crate::modules::qoder_variant::QoderVariantKind::Qoder {
+                detect_qoder_exec_path()
+            } else {
+                detect_qoder_exec_path_for_variant(kind)
+            }?;
+            update_app_path_in_config(app, &detected, &configured);
+            return Some(qoder_configured_app_path(&config::get_user_config(), kind).to_string());
         }
         "zcode" => {
             if !force && !current.zcode_app_path.trim().is_empty() {

@@ -590,7 +590,7 @@ async fn refresh_due_codebuddy_accounts() -> bool {
         if reached_platform_refresh_limit(attempted_refreshes) {
             break;
         }
-        if !expires_at_seconds_due(account.expires_at) {
+        if !expires_at_milliseconds_due(account.expires_at) {
             continue;
         }
 
@@ -654,7 +654,7 @@ async fn refresh_due_codebuddy_cn_accounts() -> bool {
         if reached_platform_refresh_limit(attempted_refreshes) {
             break;
         }
-        if !expires_at_seconds_due(account.expires_at) {
+        if !expires_at_milliseconds_due(account.expires_at) {
             continue;
         }
 
@@ -717,7 +717,7 @@ async fn refresh_due_workbuddy_accounts() -> bool {
         if reached_platform_refresh_limit(attempted_refreshes) {
             break;
         }
-        if !expires_at_seconds_due(account.expires_at) {
+        if !expires_at_milliseconds_due(account.expires_at) {
             continue;
         }
 
@@ -922,4 +922,49 @@ async fn refresh_due_trae_accounts() -> bool {
     }
 
     refreshed_any
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expires_at_milliseconds_due_uses_millisecond_clock() {
+        // Within refresh lead (5 min < 15 min) → due.
+        let within_lead = now_ts_ms() + 5 * 60 * 1000;
+        assert!(expires_at_milliseconds_due(Some(within_lead)));
+
+        // Well beyond refresh lead (30 min > 15 min) → not due.
+        let far_future = now_ts_ms() + 30 * 60 * 1000;
+        assert!(!expires_at_milliseconds_due(Some(far_future)));
+
+        // No expiry information → treat as due so the token is refreshed defensively.
+        assert!(expires_at_milliseconds_due(None));
+    }
+
+    #[test]
+    fn expires_at_milliseconds_due_respects_lead_boundary() {
+        let just_inside = now_ts_ms() + TOKEN_REFRESH_LEAD_MILLISECONDS - 1000;
+        let just_outside = now_ts_ms() + TOKEN_REFRESH_LEAD_MILLISECONDS + 60_000;
+        assert!(expires_at_milliseconds_due(Some(just_inside)));
+        assert!(!expires_at_milliseconds_due(Some(just_outside)));
+    }
+
+    // TDD anchor for the original defect: a real millisecond-epoch expiry that is
+    // inside the lead window must be due under the ms helper, while the old
+    // seconds helper (previously applied to these ms-valued fields) never fires
+    // because the ms value dwarfs the seconds threshold.
+    #[test]
+    fn millisecond_value_disagrees_with_seconds_helper() {
+        let ms_within_lead = now_ts_ms() + 5 * 60 * 1000;
+        assert!(expires_at_milliseconds_due(Some(ms_within_lead)));
+        assert!(!expires_at_seconds_due(Some(ms_within_lead)));
+    }
+
+    #[test]
+    fn expires_at_seconds_due_still_uses_seconds_clock() {
+        assert!(expires_at_seconds_due(Some(now_ts() + 5 * 60)));
+        assert!(!expires_at_seconds_due(Some(now_ts() + 30 * 60)));
+        assert!(expires_at_seconds_due(None));
+    }
 }

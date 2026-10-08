@@ -332,6 +332,24 @@ $shortcut.Save()
 }
 
 #[cfg(test)]
+mod qoder_app_strict_profile_tests {
+    use super::{build_user_data_dir_match_target, resolve_pid_from_entries_by_user_data_dir};
+
+    #[test]
+    fn explicit_default_profile_detects_app_when_default_fallback_is_disabled() {
+        let default_dir = "/tmp/qoder-app-default";
+        // 严格检测禁用隐式默认目录，因此旧的 None 调用无法找到正在运行的 App。
+        assert!(build_user_data_dir_match_target(None, Some(default_dir.to_string()), false).is_none());
+        let (target, allow_no_dir) = build_user_data_dir_match_target(
+            Some(default_dir), Some(default_dir.to_string()), false,
+        ).unwrap();
+        assert_eq!(resolve_pid_from_entries_by_user_data_dir(
+            None, &target, allow_no_dir, &[(123, None)],
+        ), Some(123));
+    }
+}
+
+#[cfg(test)]
 mod legacy_platform_adapter_cleanup_tests {
     use super::{orphaned_legacy_platform_adapter_pid_from_ps_line, utf8_command_output_snippet};
 
@@ -468,11 +486,11 @@ mod qoder_macos_process_tests {
     use super::is_qoder_macos_main_process_command_line;
 
     #[test]
-    fn matches_current_and_legacy_qoder_main_processes() {
+    fn matches_current_qoder_ide_main_process() {
         assert!(is_qoder_macos_main_process_command_line(
             "/Applications/Qoder IDE.app/Contents/MacOS/Qoder"
         ));
-        assert!(is_qoder_macos_main_process_command_line(
+        assert!(!is_qoder_macos_main_process_command_line(
             "/Applications/Qoder.app/Contents/MacOS/Qoder"
         ));
         assert!(!is_qoder_macos_main_process_command_line(
@@ -481,6 +499,140 @@ mod qoder_macos_process_tests {
         assert!(!is_qoder_macos_main_process_command_line(
             "/Applications/Qoder IDE.app/Contents/Frameworks/Electron Framework.framework/Helpers/chrome_crashpad_handler"
         ));
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod qoder_variant_launch_mapping_tests {
+    use super::{is_qoder_variant_main_process_command_line, qoder_variant_client_bundle};
+    use crate::modules::qoder_variant::QoderVariantKind;
+
+    #[test]
+    fn qoder_variant_client_bundle_mapping() {
+        let cases = [
+            (QoderVariantKind::QoderCnApp, "Qoder CN.app"),
+            (QoderVariantKind::QoderApp, "Qoder.app"),
+            (QoderVariantKind::QoderCnIde, "Qoder CN IDE.app"),
+            (QoderVariantKind::Qoder, "Qoder IDE.app"),
+        ];
+        for (kind, bundle) in cases {
+            assert_eq!(qoder_variant_client_bundle(kind), bundle, "{kind:?}");
+            println!("qoder variant {:?} -> {}", kind, bundle);
+        }
+    }
+
+    #[test]
+    fn qoder_variant_main_process_matching_is_per_variant() {
+        assert!(is_qoder_variant_main_process_command_line(
+            QoderVariantKind::QoderCnApp,
+            "/Applications/Qoder CN.app/Contents/MacOS/Qoder CN"
+        ));
+        assert!(is_qoder_variant_main_process_command_line(
+            QoderVariantKind::QoderCnIde,
+            "/Applications/Qoder CN IDE.app/Contents/MacOS/Qoder CN"
+        ));
+        assert!(is_qoder_variant_main_process_command_line(
+            QoderVariantKind::QoderApp,
+            "/Applications/Qoder.app/Contents/MacOS/Qoder"
+        ));
+        // 变体互不串台：CN App 匹配不到 intl App，反之亦然。
+        assert!(!is_qoder_variant_main_process_command_line(
+            QoderVariantKind::QoderCnApp,
+            "/Applications/Qoder.app/Contents/MacOS/Qoder"
+        ));
+        assert!(!is_qoder_variant_main_process_command_line(
+            QoderVariantKind::QoderApp,
+            "/Applications/Qoder CN.app/Contents/MacOS/Qoder CN"
+        ));
+        // helper/crashpad 不算主进程。
+        assert!(!is_qoder_variant_main_process_command_line(
+            QoderVariantKind::QoderCnApp,
+            "/Applications/Qoder CN.app/Contents/Frameworks/Qoder CN Helper.app/Contents/MacOS/Qoder CN Helper --type=gpu-process"
+        ));
+        assert!(!is_qoder_variant_main_process_command_line(
+            QoderVariantKind::QoderCnApp,
+            "/Applications/Qoder CN.app/Contents/Frameworks/Electron Framework.framework/Helpers/chrome_crashpad_handler --database=/tmp"
+        ));
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod qoder_macos_launch_detection_tests {
+    use super::{detect_qoder_exec_path, qoder_macos_exec_candidates, resolve_qoder_launch_path};
+
+    #[test]
+    fn requires_current_ide_bundle_name_and_identity() {
+        let root = std::env::temp_dir()
+            .join(format!("qoder-bundle-{}", uuid::Uuid::new_v4()))
+            .join("Qoder.app");
+        let macos = root.join("Contents/MacOS");
+        std::fs::create_dir_all(&macos).expect("fixture directory");
+        std::fs::write(macos.join("Qoder"), b"").expect("fixture executable");
+        for bundle_id in ["com.qoder.app", "com.qoder.ide"] {
+            let plist = format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>{}</string></dict></plist>"#,
+                bundle_id
+            );
+            std::fs::write(root.join("Contents/Info.plist"), plist).expect("fixture plist");
+            assert_eq!(
+                super::resolve_qoder_macos_exec_path(&root.to_string_lossy()).is_some(),
+                false,
+                "bundle identity must distinguish {} at the same path", bundle_id
+            );
+        }
+        let ide_root = root.with_file_name("Qoder IDE.app");
+        std::fs::rename(&root, &ide_root).expect("rename fixture to current IDE bundle");
+        assert!(super::resolve_qoder_macos_exec_path(&ide_root.to_string_lossy()).is_some());
+        std::fs::remove_dir_all(root.parent().expect("fixture parent")).expect("remove fixture");
+    }
+
+    fn position_of(needle: &str) -> usize {
+        qoder_macos_exec_candidates()
+            .iter()
+            .position(|path| path.to_string_lossy().contains(needle))
+            .unwrap_or_else(|| panic!("missing candidate {needle}"))
+    }
+
+    #[test]
+    fn ide_bundle_candidates_exclude_app_bundle() {
+        let _ide = position_of("Qoder IDE.app");
+        assert!(qoder_macos_exec_candidates()
+            .iter()
+            .all(|path| !path.to_string_lossy().contains("/Qoder.app")));
+        for required in [
+            "/Applications/Qoder IDE.app/Contents/MacOS/Qoder",
+            "/Applications/Qoder IDE.app/Contents/MacOS/Qoder IDE",
+            "/Applications/Qoder IDE.app/Contents/MacOS/Electron",
+            "/Applications/Qoder IDE.app",
+        ] {
+            assert!(
+                qoder_macos_exec_candidates()
+                    .iter()
+                    .any(|path| path.to_string_lossy() == required),
+                "missing IDE candidate {required}"
+            );
+        }
+    }
+
+    #[test]
+    fn detection_prefers_ide_bundle_when_both_bundles_installed() {
+        let ide_bundle = std::path::Path::new("/Applications/Qoder IDE.app");
+        if !ide_bundle.exists() {
+            return;
+        }
+        let detected = detect_qoder_exec_path().expect("detect qoder exec path");
+        assert!(
+            detected.to_string_lossy().contains("Qoder IDE.app"),
+            "detected legacy app instead of IDE: {}",
+            detected.display()
+        );
+        let resolved = resolve_qoder_launch_path().expect("resolve qoder launch path");
+        assert!(
+            resolved.to_string_lossy().contains("Qoder IDE.app"),
+            "resolved legacy app instead of IDE: {}",
+            resolved.display()
+        );
+        println!("qoder launch path = {}", resolved.display());
     }
 }
 

@@ -207,6 +207,9 @@ pub(crate) enum PlatformId {
     Codebuddy,
     CodebuddyCn,
     Qoder,
+    QoderApp,
+    QoderCnIde,
+    QoderCnApp,
     Zcode,
     Trae,
     TraeSolo,
@@ -216,7 +219,7 @@ pub(crate) enum PlatformId {
 }
 
 impl PlatformId {
-    pub(crate) fn default_order() -> [Self; 18] {
+    pub(crate) fn default_order() -> [Self; 21] {
         [
             Self::Claude,
             Self::Codex,
@@ -230,6 +233,9 @@ impl PlatformId {
             Self::Codebuddy,
             Self::CodebuddyCn,
             Self::Qoder,
+            Self::QoderApp,
+            Self::QoderCnIde,
+            Self::QoderCnApp,
             Self::Zcode,
             Self::Trae,
             Self::TraeSolo,
@@ -253,6 +259,9 @@ impl PlatformId {
             crate::modules::tray_layout::PLATFORM_CODEBUDDY => Some(Self::Codebuddy),
             crate::modules::tray_layout::PLATFORM_CODEBUDDY_CN => Some(Self::CodebuddyCn),
             crate::modules::tray_layout::PLATFORM_QODER => Some(Self::Qoder),
+            crate::modules::tray_layout::PLATFORM_QODER_APP => Some(Self::QoderApp),
+            crate::modules::tray_layout::PLATFORM_QODER_CN_IDE => Some(Self::QoderCnIde),
+            crate::modules::tray_layout::PLATFORM_QODER_CN_APP => Some(Self::QoderCnApp),
             crate::modules::tray_layout::PLATFORM_ZCODE => Some(Self::Zcode),
             crate::modules::tray_layout::PLATFORM_TRAE => Some(Self::Trae),
             crate::modules::tray_layout::PLATFORM_TRAE_SOLO => Some(Self::TraeSolo),
@@ -277,6 +286,9 @@ impl PlatformId {
             Self::Codebuddy => crate::modules::tray_layout::PLATFORM_CODEBUDDY,
             Self::CodebuddyCn => crate::modules::tray_layout::PLATFORM_CODEBUDDY_CN,
             Self::Qoder => crate::modules::tray_layout::PLATFORM_QODER,
+            Self::QoderApp => crate::modules::tray_layout::PLATFORM_QODER_APP,
+            Self::QoderCnIde => crate::modules::tray_layout::PLATFORM_QODER_CN_IDE,
+            Self::QoderCnApp => crate::modules::tray_layout::PLATFORM_QODER_CN_APP,
             Self::Zcode => crate::modules::tray_layout::PLATFORM_ZCODE,
             Self::Trae => crate::modules::tray_layout::PLATFORM_TRAE,
             Self::TraeSolo => crate::modules::tray_layout::PLATFORM_TRAE_SOLO,
@@ -299,7 +311,10 @@ impl PlatformId {
             Self::Grok => "Grok CLI",
             Self::Codebuddy => "CodeBuddy",
             Self::CodebuddyCn => "CodeBuddy CN",
-            Self::Qoder => "Qoder",
+            Self::Qoder => "Qoder IDE",
+            Self::QoderApp => "Qoder",
+            Self::QoderCnIde => "Qoder CN IDE",
+            Self::QoderCnApp => "Qoder CN",
             Self::Zcode => "ZCode",
             Self::Trae => "Trae",
             Self::TraeSolo => "TRAE SOLO",
@@ -323,6 +338,9 @@ impl PlatformId {
             Self::Codebuddy => "codebuddy",
             Self::CodebuddyCn => "codebuddy-cn",
             Self::Qoder => "qoder",
+            Self::QoderApp => "qoder-app",
+            Self::QoderCnIde => "qoder-cn-ide",
+            Self::QoderCnApp => "qoder-cn-app",
             Self::Zcode => "zcode",
             Self::Trae => "trae",
             Self::TraeSolo => "trae-solo",
@@ -927,7 +945,10 @@ fn get_account_display_info(platform: PlatformId, lang: &str) -> AccountDisplayI
         PlatformId::Grok => build_grok_display_info(lang),
         PlatformId::Codebuddy => build_codebuddy_display_info(lang),
         PlatformId::CodebuddyCn => build_codebuddy_cn_display_info(lang),
-        PlatformId::Qoder => build_qoder_display_info(lang),
+        PlatformId::Qoder
+        | PlatformId::QoderApp
+        | PlatformId::QoderCnIde
+        | PlatformId::QoderCnApp => build_qoder_display_info(lang, platform),
         PlatformId::Zcode => build_zcode_display_info(lang),
         PlatformId::Trae | PlatformId::TraeSolo | PlatformId::TraeCn | PlatformId::TraeSoloCn => {
             build_trae_display_info(lang, platform)
@@ -1794,10 +1815,9 @@ fn json_as_f64(value: &serde_json::Value) -> Option<f64> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn build_qoder_display_info(lang: &str) -> AccountDisplayInfo {
+fn build_qoder_display_info(lang: &str, platform: PlatformId) -> AccountDisplayInfo {
     let accounts = crate::modules::qoder_account::list_accounts();
-    let account = crate::modules::qoder_account::resolve_current_account_id(&accounts)
-        .and_then(|account_id| accounts.iter().find(|item| item.id == account_id).cloned());
+    let account = resolve_qoder_current_account(&accounts, platform);
 
     let Some(account) = account else {
         return AccountDisplayInfo {
@@ -1806,6 +1826,7 @@ fn build_qoder_display_info(lang: &str) -> AccountDisplayInfo {
         };
     };
 
+    let credit_usage = account.credit_usage().cloned();
     let mut quota_lines = Vec::new();
 
     // Parse plan tag from raw data (matching frontend getRawPlanTag)
@@ -1817,11 +1838,11 @@ fn build_qoder_display_info(lang: &str) -> AccountDisplayInfo {
         json_nested(&account.auth_user_plan_raw, &["plan"]),
         json_nested(&account.auth_user_info_raw, &["userTag"]),
         json_nested(&account.auth_user_info_raw, &["user_tag"]),
-        json_nested(&account.auth_credit_usage_raw, &["plan_tier_name"]),
-        json_nested(&account.auth_credit_usage_raw, &["tier_name"]),
-        json_nested(&account.auth_credit_usage_raw, &["tierName"]),
-        json_nested(&account.auth_credit_usage_raw, &["planTierName"]),
-        account.plan_type.as_deref().map(|s| s.to_string()),
+        json_nested(&credit_usage, &["plan_tier_name"]),
+        json_nested(&credit_usage, &["tier_name"]),
+        json_nested(&credit_usage, &["tierName"]),
+        json_nested(&credit_usage, &["planTierName"]),
+        account.plan_type_for_display().map(str::to_string),
     ]);
     if let Some(ref tag) = plan_tag {
         quota_lines.push(format!("Plan: {}", tag));
@@ -1830,7 +1851,7 @@ fn build_qoder_display_info(lang: &str) -> AccountDisplayInfo {
     // Parse userQuota from auth_credit_usage_raw / auth_user_plan_raw / auth_user_info_raw
     let user_quota = parse_qoder_quota_bucket(
         &[
-            json_nested_obj(&account.auth_credit_usage_raw, &["userQuota"]),
+            json_nested_obj(&credit_usage, &["userQuota"]),
             json_nested_obj(&account.auth_user_plan_raw, &["userQuota"]),
             json_nested_obj(&account.auth_user_info_raw, &["userQuota"]),
         ],
@@ -1856,9 +1877,9 @@ fn build_qoder_display_info(lang: &str) -> AccountDisplayInfo {
     // Parse addOnQuota
     let addon_quota = parse_qoder_quota_bucket(
         &[
-            json_nested_obj(&account.auth_credit_usage_raw, &["addOnQuota"]),
-            json_nested_obj(&account.auth_credit_usage_raw, &["addonQuota"]),
-            json_nested_obj(&account.auth_credit_usage_raw, &["add_on_quota"]),
+            json_nested_obj(&credit_usage, &["addOnQuota"]),
+            json_nested_obj(&credit_usage, &["addonQuota"]),
+            json_nested_obj(&credit_usage, &["add_on_quota"]),
             json_nested_obj(&account.auth_user_plan_raw, &["addOnQuota"]),
             json_nested_obj(&account.auth_user_plan_raw, &["addonQuota"]),
             json_nested_obj(&account.auth_user_plan_raw, &["add_on_quota"]),
@@ -1881,30 +1902,30 @@ fn build_qoder_display_info(lang: &str) -> AccountDisplayInfo {
     // Parse shared credit package
     let shared_used = json_first_f64(&[
         json_nested_f64(
-            &account.auth_credit_usage_raw,
+            &credit_usage,
             &["orgResourcePackage", "used"],
         ),
         json_nested_f64(
-            &account.auth_credit_usage_raw,
+            &credit_usage,
             &["orgResourcePackage", "usage"],
         ),
         json_nested_f64(
-            &account.auth_credit_usage_raw,
+            &credit_usage,
             &["orgResourcePackage", "consumed"],
         ),
         json_nested_f64(
-            &account.auth_credit_usage_raw,
+            &credit_usage,
             &["orgResourcePackage", "count"],
         ),
         json_nested_f64(
-            &account.auth_credit_usage_raw,
+            &credit_usage,
             &["organizationResourcePackage", "used"],
         ),
         json_nested_f64(
-            &account.auth_credit_usage_raw,
+            &credit_usage,
             &["sharedCreditPackage", "used"],
         ),
-        json_nested_f64(&account.auth_credit_usage_raw, &["resourcePackage", "used"]),
+        json_nested_f64(&credit_usage, &["resourcePackage", "used"]),
         json_nested_f64(&account.auth_user_plan_raw, &["orgResourcePackage", "used"]),
     ]);
     let shared_label = if lang == "zh" || lang == "zh-CN" {
@@ -1918,13 +1939,18 @@ fn build_qoder_display_info(lang: &str) -> AccountDisplayInfo {
         quota_lines.push(format!("{}: --", shared_label));
     }
 
-    let display_email = first_non_empty(&[
-        Some(account.email.as_str()),
-        account.display_name.as_deref(),
-        account.user_id.as_deref(),
-        Some(account.id.as_str()),
-    ])
-    .unwrap_or("—");
+    let security_mobile = crate::modules::qoder_account::security_mobile_of(&account);
+    let display_email = if crate::modules::qoder_account::account_email_is_sentinel(&account.email) {
+        first_non_empty(&[
+            security_mobile.as_deref(),
+            account.display_name.as_deref(),
+            account.user_id.as_deref(),
+            Some(account.id.as_str()),
+        ])
+        .unwrap_or("—")
+    } else {
+        account.email.as_str()
+    };
 
     AccountDisplayInfo {
         account: format!("📧 {}", display_email),
@@ -2651,6 +2677,22 @@ fn resolve_trae_current_account(
     let platform_kind =
         crate::modules::trae_account::TraePlatformKind::parse(Some(platform.as_str())).ok()?;
     crate::modules::trae_account::resolve_current_account_id_for_platform(accounts, platform_kind)
+        .and_then(|account_id| {
+            accounts
+                .iter()
+                .find(|account| account.id == account_id)
+                .cloned()
+        })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn resolve_qoder_current_account(
+    accounts: &[crate::models::qoder::QoderAccount],
+    platform: PlatformId,
+) -> Option<crate::models::qoder::QoderAccount> {
+    let variant =
+        crate::modules::qoder_variant::QoderVariantKind::parse(Some(platform.as_str())).ok()?;
+    crate::modules::qoder_account::resolve_current_account_id_for_variant(accounts, variant)
         .and_then(|account_id| {
             accounts
                 .iter()

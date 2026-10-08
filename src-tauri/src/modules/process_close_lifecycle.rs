@@ -194,6 +194,48 @@ pub fn close_qoder_instances(user_data_dirs: &[String], timeout_secs: u64) -> Re
     )
 }
 
+/// 变体客户端关闭：按安装路径和 userData 目标筛选主进程。
+pub fn close_qoder_variant_instances(
+    kind: crate::modules::qoder_variant::QoderVariantKind,
+    user_data_dirs: &[String],
+    timeout_secs: u64,
+) -> Result<(), String> {
+    let default_dir = qoder_variant_default_user_data_dir(kind)
+        .map(|value| normalize_path_for_compare(&value))
+        .filter(|value| !value.is_empty());
+    let display = kind.display_name();
+    let log_prefix = format!("{} Close", display);
+    close_managed_instances_common(
+        &log_prefix,
+        &format!("Closing {} instances...", display),
+        &format!("No {} instance directories provided", display),
+        &format!("Managed {} instances are not running", display),
+        display,
+        &format!(
+            "Unable to close managed {} instances; please close them manually and retry",
+            display
+        ),
+        user_data_dirs,
+        timeout_secs,
+        || collect_qoder_process_entries_for_variant(kind),
+        |entries, target_dirs| {
+            select_main_pids_by_target_dirs(entries, target_dirs, default_dir.as_deref())
+        },
+        |target_dirs| {
+            filter_entries_by_target_dirs(
+                collect_qoder_process_entries_for_variant(kind),
+                target_dirs,
+                default_dir.as_deref(),
+            )
+        },
+        None,
+        None,
+        None,
+    )?;
+    thread::sleep(Duration::from_millis(350));
+    Ok(())
+}
+
 pub fn close_trae_instances(user_data_dirs: &[String], timeout_secs: u64) -> Result<(), String> {
     let default_dir = get_default_trae_user_data_dir_for_os()
         .map(|value| normalize_path_for_compare(&value))

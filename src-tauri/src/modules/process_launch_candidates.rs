@@ -629,6 +629,7 @@ fn parse_windows_exec_candidates(
     exe_names: &[&str],
     display_keywords: &[&str],
     output: std::process::Output,
+    candidate_matches: &dyn Fn(&std::path::Path) -> bool,
 ) -> Option<std::path::PathBuf> {
     let exe_names_lower: HashSet<String> =
         exe_names.iter().map(|value| value.to_lowercase()).collect();
@@ -652,6 +653,9 @@ fn parse_windows_exec_candidates(
         let Some(path) = normalize_windows_candidate_path(line) else {
             continue;
         };
+        if !candidate_matches(&path) {
+            continue;
+        }
         let dedupe_key = path.to_string_lossy().to_lowercase();
         if !seen.insert(dedupe_key) {
             continue;
@@ -818,12 +822,39 @@ fn windows_app_launch_signature(app: &str) -> Option<WindowsAppLaunchSignature> 
             supports_multi_instance: true,
         }),
         "qoder" => Some(WindowsAppLaunchSignature {
+            label: "Qoder IDE",
+            exe_names: &["Qoder IDE.exe"],
+            command_names: &[],
+            protocol_names: &[],
+            display_keywords: &["qoder ide"],
+            common_paths: &["Qoder IDE\\Qoder IDE.exe"],
+            supports_multi_instance: true,
+        }),
+        "qoder_app" => Some(WindowsAppLaunchSignature {
             label: "Qoder",
-            exe_names: &["Qoder.exe"],
-            command_names: &["qoder"],
-            protocol_names: &["qoder"],
+            exe_names: &["Qoder Launcher.exe", "Qoder.exe"],
+            command_names: &[],
+            protocol_names: &[],
             display_keywords: &["qoder"],
-            common_paths: &["Qoder\\Qoder.exe"],
+            common_paths: &["Qoder\\Qoder Launcher.exe", "Qoder\\Qoder.exe"],
+            supports_multi_instance: true,
+        }),
+        "qoder_cn_ide" => Some(WindowsAppLaunchSignature {
+            label: "Qoder CN IDE",
+            exe_names: &["Qoder CN IDE.exe"],
+            command_names: &[],
+            protocol_names: &[],
+            display_keywords: &["qoder cn ide"],
+            common_paths: &["Qoder CN IDE\\Qoder CN IDE.exe"],
+            supports_multi_instance: true,
+        }),
+        "qoder_cn_app" => Some(WindowsAppLaunchSignature {
+            label: "Qoder CN",
+            exe_names: &["Qoder CN Launcher.exe", "Qoder CN.exe"],
+            command_names: &[],
+            protocol_names: &[],
+            display_keywords: &["qoder cn"],
+            common_paths: &["Qoder CN\\Qoder CN Launcher.exe", "Qoder CN\\Qoder CN.exe"],
             supports_multi_instance: true,
         }),
         "zcode" => Some(WindowsAppLaunchSignature {
@@ -1103,6 +1134,15 @@ fn running_app_candidate_matches(
     #[cfg(target_os = "windows")]
     if let Some(platform) = windows_trae_platform_for_app(app) {
         if !windows_trae_candidate_matches_platform(path, platform) {
+            return false;
+        }
+    }
+
+    if app.starts_with("qoder") {
+        let Ok(kind) = crate::modules::qoder_variant::QoderVariantKind::parse(Some(app)) else {
+            return false;
+        };
+        if !crate::modules::qoder_platform_paths::windows_candidate_matches_variant(kind, path) {
             return false;
         }
     }
@@ -1460,6 +1500,20 @@ pub fn detect_windows_exec_path_by_signatures(
     protocol_names: &[&str],
     display_keywords: &[&str],
 ) -> Option<std::path::PathBuf> {
+    detect_windows_exec_path_by_signatures_filtered(
+        app_label, exe_names, command_names, protocol_names, display_keywords, &|_| true,
+    )
+}
+
+#[cfg(target_os = "windows")]
+pub fn detect_windows_exec_path_by_signatures_filtered(
+    app_label: &str,
+    exe_names: &[&str],
+    command_names: &[&str],
+    protocol_names: &[&str],
+    display_keywords: &[&str],
+    candidate_matches: &dyn Fn(&std::path::Path) -> bool,
+) -> Option<std::path::PathBuf> {
     if exe_names.is_empty() {
         return None;
     }
@@ -1496,7 +1550,7 @@ pub fn detect_windows_exec_path_by_signatures(
         return None;
     }
 
-    parse_windows_exec_candidates(app_label, exe_names, display_keywords, output)
+    parse_windows_exec_candidates(app_label, exe_names, display_keywords, output, candidate_matches)
 }
 
 #[cfg(target_os = "windows")]
@@ -2138,6 +2192,9 @@ fn update_app_path_in_config(app: &str, path: &Path, expected_current: &str) {
             "codebuddy" => &mut current.codebuddy_app_path,
             "codebuddy_cn" => &mut current.codebuddy_cn_app_path,
             "qoder" => &mut current.qoder_app_path,
+            "qoder_app" => &mut current.qoder_app_variant_path,
+            "qoder_cn_ide" => &mut current.qoder_cn_ide_app_path,
+            "qoder_cn_app" => &mut current.qoder_cn_app_path,
             "zcode" => &mut current.zcode_app_path,
             "trae" => &mut current.trae_app_path,
             "trae_solo" => &mut current.trae_solo_app_path,
