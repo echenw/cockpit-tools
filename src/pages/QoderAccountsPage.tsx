@@ -1,4 +1,5 @@
 import { useQoderCurrentAccountIds } from '../hooks/useQoderCurrentAccountIds';
+import { useQoderRewardClock } from '../hooks/useQoderRewardClock';
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowDownWideNarrow,
@@ -11,9 +12,11 @@ import {
   Eye,
   EyeOff,
   Globe,
+  Info,
   KeyRound,
   LayoutGrid,
   List,
+  Gift,
   Play,
   Plus,
   RefreshCw,
@@ -27,8 +30,11 @@ import {
 } from 'lucide-react';
 import { confirm as confirmDialog } from '@tauri-apps/plugin-dialog';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import { listen } from '@tauri-apps/api/event';
 import { useTranslation } from 'react-i18next';
 import { TagEditModal } from '../components/TagEditModal';
+import { QoderBatchClaimModal } from '../components/QoderBatchClaimModal';
+import '../components/QoderBatchClaimModal.css';
 import { QoderOfficialLoginSection } from '../components/QoderOfficialLoginSection';
 import { useActionBubble } from '../components/ActionBubble';
 import { ExportJsonModal } from '../components/ExportJsonModal';
@@ -47,7 +53,8 @@ import {
   PlatformOverviewTabsHeader,
 } from '../components/platform/PlatformOverviewTabsHeader';
 import { QoderInstancesContent } from './QoderInstancesPage';
-import { useQoderAccountStore } from '../stores/useQoderAccountStore';
+import { CodeBuddyQuotaCategoryList } from '../components/codebuddy/CodeBuddyQuotaCategoryList';
+import { checkUnknownQoderRewardStatuses, QODER_REWARD_RETRY_DELAY_MS, useQoderAccountStore } from '../stores/useQoderAccountStore';
 import * as qoderService from '../services/qoderService';
 import {
   QoderAccount,
@@ -56,10 +63,10 @@ import {
   getQoderAccountDisplayEmail,
   getQoderAccountVariants, qoderAccountSupportsVariant,
   getQoderPlanBadge,
-  getQoderSubscriptionInfo,
   getQoderUsage,
+  getQoderQuotaCategoryGroups,
   hasQoderQuotaData,
-  shouldShowQoderSubscriptionReset,
+  resolveQoderRewardStatus,
 } from '../types/qoder';
 import {
   isPrivacyModeEnabledByDefault,
@@ -98,6 +105,7 @@ import {
 } from '../utils/accountsOverviewFilterPersistence';
 
 const QODER_FLOW_NOTICE_COLLAPSED_KEY = 'agtools.qoder.flow_notice_collapsed';
+const QODER_WEB_SYNC_NOTICE_SUPPRESSED_KEY = 'agtools.qoder.web_sync_notice_suppressed';
 const QODER_FILTER_FIELD_VIEW_MODE = 'view_mode';
 const QODER_FILTER_FIELD_SORT_BY = 'sort_by';
 const QODER_FILTER_FIELD_SORT_DIRECTION = 'sort_direction';
@@ -117,21 +125,10 @@ type ViewMode = 'grid' | 'list';
 type SortBy = 'created_at' | 'plan' | 'quota';
 type SortDirection = 'asc' | 'desc';
 
-type QoderQuotaDisplayItem = {
-  key: 'included' | 'creditPackage' | 'sharedCreditPackage';
-  label: string;
-  normalizedPercent: number;
-  quotaClass: 'high' | 'medium' | 'critical';
-  percentageText: string | null;
-  valueText: string;
-  showProgress: boolean;
-};
-
-type QoderQuotaDisplay = {
-  planTag: string;
-  planClass: string;
-  items: QoderQuotaDisplayItem[];
-  resetText: string | null;
+type QoderWebSyncNotice = {
+  platformId: QoderVariantId;
+  error: string;
+  requiresChromePermission: boolean;
 };
 
 function readBooleanStorage(key: string, fallback: boolean) {
@@ -189,16 +186,15 @@ function formatDateTime(value: number): string {
   });
 }
 
-function formatDisplayDate(value: number): string {
-  return new Date(value).toLocaleDateString(undefined, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  });
-}
-
-function formatQuotaValue(value: number | null | undefined): string {
-  return formatNumber(value ?? 0);
+function formatCardDate(value: number): string {
+  const normalized = value > 1e11 ? Math.floor(value / 1000) : value;
+  const d = new Date((normalized || 0) * 1000);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const hours = String(d.getHours()).padStart(2, '0');
+  const minutes = String(d.getMinutes()).padStart(2, '0');
+  return `${year}/${month}/${day}\n${hours}:${minutes}`;
 }
 
 function resolveQoderPlanBadgeClass(plan: string): string {
@@ -214,13 +210,6 @@ function resolveQoderPlanBadgeClass(plan: string): string {
   if (normalized.includes('plus')) return 'plus';
   if (normalized.includes('ultra')) return 'ultra';
   return 'unknown';
-}
-
-function computeQuotaClass(percent: number | null): 'high' | 'medium' | 'critical' {
-  if (percent == null) return 'high';
-  if (percent >= 90) return 'critical';
-  if (percent >= 70) return 'medium';
-  return 'high';
 }
 
 function logQoderOauthUi(stage: string, payload?: Record<string, unknown>) {
@@ -340,6 +329,11 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
   const { showBubble, renderBubble } = useActionBubble();
   const exportAnchorRef = useRef<HTMLElement | null>(null);
   const [message, setMessage] = useState<{ text: string; tone?: 'error' } | null>(null);
+  const [webSyncNotice, setWebSyncNotice] = useState<QoderWebSyncNotice | null>(null);
+  const webSyncNoticeSuppressedRef = useRef(readBooleanStorage(QODER_WEB_SYNC_NOTICE_SUPPRESSED_KEY, false));
+  const [claimingRewardIds, setClaimingRewardIds] = useState<Set<string>>(() => new Set());
+  const claimingRewardIdsRef = useRef<Set<string>>(new Set());
+  const [showBatchClaimModal, setShowBatchClaimModal] = useState<boolean>(false);
   const [refreshing, setRefreshing] = useState<string | null>(null);
   const [refreshingAll, setRefreshingAll] = useState(false);
   const [injecting, setInjecting] = useState<string | null>(null);
@@ -525,6 +519,44 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
   );
   const loading = store.loading;
 
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<QoderWebSyncNotice>('qoder-web-sync-failed', ({ payload }) => {
+      const sameRegion = qoderAccountSupportsVariant({ variant: payload.platformId }, activeVariant);
+      if (disposed || !sameRegion || webSyncNoticeSuppressedRef.current) return;
+      setWebSyncNotice({ ...payload, platformId: activeVariant });
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [activeVariant]);
+
+  const suppressWebSyncNotice = useCallback(() => {
+    webSyncNoticeSuppressedRef.current = true;
+    writeBooleanStorage(QODER_WEB_SYNC_NOTICE_SUPPRESSED_KEY, true);
+    setWebSyncNotice(null);
+  }, []);
+
+  const formatQuotaDateTime = useCallback((timeMs: number | null) => {
+    if (timeMs == null || !Number.isFinite(timeMs) || timeMs <= 0) return '';
+    const ms = timeMs < 1_000_000_000_000 ? timeMs * 1000 : timeMs;
+    const date = new Date(ms);
+    return date.toLocaleString('zh-CN', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    });
+  }, []);
+
   const exportModal = useExportJsonModal({
     exportFilePrefix: 'qoder_accounts',
     exportJsonByIds: qoderService.exportQoderAccounts,
@@ -625,6 +657,20 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
     };
   }, [syncPrivacyMode]);
 
+  const rewardNow = useQoderRewardClock(accounts);
+
+  // 当账号数据变化或活动日窗过期时，静默查询最新活动状态。
+  useEffect(() => {
+    const check = () => {
+      void checkUnknownQoderRewardStatuses(accounts).catch((err) => {
+        console.warn('[Qoder Reward] 静默同步活动状态失败:', err);
+      });
+    };
+    check();
+    // Unresolved statuses retry while this page is mounted; pending queries stay deduplicated.
+    const timer = window.setInterval(check, QODER_REWARD_RETRY_DELAY_MS);
+    return () => window.clearInterval(timer);
+  }, [accounts, rewardNow]);
 
   const currentAccountId = currentIds[activeVariant];
 
@@ -874,6 +920,10 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
   }, [filteredAccounts, groupByTag, tagFilter]);
 
   const filteredIds = useMemo(() => filteredAccounts.map((item) => item.id), [filteredAccounts]);
+  const claimableCount = useMemo(
+    () => filteredAccounts.filter((item) => resolveQoderRewardStatus(item, rewardNow) === 'claimable').length,
+    [filteredAccounts, rewardNow],
+  );
   const pagination = usePagination({
     items: filteredAccounts,
     storageKey: buildPaginationPageSizeStorageKey('Qoder'),
@@ -982,6 +1032,69 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
     [activeVariant, refreshingAll, showBubble, store, t],
   );
 
+  const handleClaimReward = useCallback(
+    async (accountId: string, anchorEl?: HTMLElement | null) => {
+      if (claimingRewardIdsRef.current.has(accountId)) return;
+      claimingRewardIdsRef.current.add(accountId);
+      setClaimingRewardIds(new Set(claimingRewardIdsRef.current));
+      const target = accounts.find((a) => a.id === accountId);
+      const email = target ? getQoderAccountDisplayEmail(target) : accountId;
+      const anchor =
+        (anchorEl && document.contains(anchorEl))
+          ? anchorEl
+          : (document.getElementById(`qoder-btn-reward-${accountId}`) ??
+             document.getElementById(`qoder-list-btn-reward-${accountId}`));
+      try {
+        const res = await qoderService.claimQoderReward(accountId);
+        if (res.success && !res.replayed) {
+          showBubble(
+            anchor,
+            res.amount == null
+              ? `${maskAccountText(email)}: ${t('common.success', '成功')}`
+              : t('qoder.claimReward.claimSuccess', '账号 {{email}} 成功领取 {{amount}} 积分！', {
+                  email: maskAccountText(email),
+                  amount: res.amount,
+                }),
+            'success',
+          );
+        } else if (res.success && res.replayed) {
+          showBubble(
+            anchor,
+            t('qoder.claimReward.alreadyClaimed', '账号 {{email}} 今日已领取过积分', {
+              email: maskAccountText(email),
+            }),
+            'info',
+          );
+        } else {
+          showBubble(
+            anchor,
+            t('qoder.claimReward.claimFailed', '账号 {{email}} 领取积分失败：{{error}}', {
+              email: maskAccountText(email),
+              error: res.message || '未知错误',
+            }),
+            'error',
+          );
+        }
+        if (res.account || res.success) {
+          await store.fetchAccounts({ silent: true });
+        }
+      } catch (error) {
+        showBubble(
+          anchor,
+          t('qoder.claimReward.claimFailed', '账号 {{email}} 领取积分失败：{{error}}', {
+            email: maskAccountText(email),
+            error: String(error).replace(/^Error:\s*/, ''),
+          }),
+          'error',
+        );
+      } finally {
+        claimingRewardIdsRef.current.delete(accountId);
+        setClaimingRewardIds(new Set(claimingRewardIdsRef.current));
+      }
+    },
+    [accounts, maskAccountText, showBubble, store, t],
+  );
+
   const handleSwitch = useCallback(
     async (accountId: string, anchorEl?: HTMLElement | null) => {
       if (injecting === accountId) return;
@@ -1007,6 +1120,43 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
       }
     },
     [activeVariant, injecting, showBubble, store, t],
+  );
+
+  const [webviewingId, setWebviewingId] = useState<string | null>(null);
+
+  const handleOpenWebview = useCallback(
+    async (accountId: string, anchorEl?: HTMLElement | null) => {
+      if (webviewingId === accountId) return;
+      const anchor =
+        (anchorEl && document.contains(anchorEl))
+          ? anchorEl
+          : (document.getElementById(`qoder-btn-webview-${accountId}`) ??
+             document.getElementById(`qoder-list-btn-webview-${accountId}`));
+      setWebviewingId(accountId);
+      const account = accounts.find((a) => a.id === accountId);
+      const email = account ? getQoderAccountDisplayEmail(account) : accountId;
+      try {
+        await qoderService.openQoderWebview(accountId);
+        showBubble(
+          anchor,
+          t('workbuddy.webview.opened', '已打开网页会话：{{email}}', {
+            email: maskAccountText(email),
+          }),
+          'success',
+        );
+      } catch (error) {
+        showBubble(
+          anchor,
+          t('workbuddy.webview.openFailed', '打开网页会话失败：{{error}}', {
+            error: String(error).replace(/^Error:\s*/, ''),
+          }),
+          'error',
+        );
+      } finally {
+        setWebviewingId(null);
+      }
+    },
+    [accounts, maskAccountText, showBubble, t, webviewingId],
   );
 
   const handleDeleteAccounts = useCallback(
@@ -1552,168 +1702,76 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
     [filteredIds, handleExportByIds, selected],
   );
 
-  const formatRelativeDuration = useCallback(
-    (seconds: number) => {
-      if (seconds < 60) {
-        return t('common.shared.time.lessThanMinute', '<1分钟');
-      }
-      const minutes = Math.floor(seconds / 60);
-      const hours = Math.floor(minutes / 60);
-      const days = Math.floor(hours / 24);
-
-      if (days > 0) {
-        const remainingHours = hours % 24;
-        if (remainingHours > 0) {
-          return t('common.shared.time.relativeDaysHours', '{{days}}天{{hours}}小时', {
-            days,
-            hours: remainingHours,
-          });
-        }
-        return t('common.shared.time.relativeDays', '{{days}}天', { days });
-      }
-      if (hours > 0) {
-        const remainingMinutes = minutes % 60;
-        if (remainingMinutes > 0) {
-          return t('common.shared.time.relativeHoursMinutes', '{{hours}}小时{{minutes}}分钟', {
-            hours,
-            minutes: remainingMinutes,
-          });
-        }
-        return t('common.shared.time.relativeHours', '{{hours}}小时', { hours });
-      }
-      return t('common.shared.time.relativeMinutes', '{{minutes}}分钟', { minutes });
-    },
-    [t],
-  );
-
-  const resolveUpdatedText = useCallback(
-    (account: QoderAccount) => {
-      const updatedAt = account.last_used || account.created_at || 0;
-      const secondsAgo = Math.max(0, Math.floor(Date.now() / 1000) - updatedAt);
-      return t('common.shared.updated.label', '更新于 {{relative}}前', {
-        relative: formatRelativeDuration(secondsAgo),
-      });
-    },
-    [formatRelativeDuration, t],
-  );
-
-  const resolveQuotaDisplay = useCallback(
-    (account: QoderAccount): QoderQuotaDisplay => {
-      const subscription = getQoderSubscriptionInfo(account);
-      const resetAt = shouldShowQoderSubscriptionReset(subscription) ? subscription.expiresAt : null;
-      const buildQuotaItem = (
-        key: 'included' | 'creditPackage',
-        label: string,
-        used: number | null | undefined,
-        total: number | null | undefined,
-        percentage: number | null | undefined,
-      ): QoderQuotaDisplayItem => {
-        const normalizedUsed = used ?? 0;
-        const normalizedTotal = total ?? 0;
-        const resolvedPercent =
-          percentage ?? (normalizedTotal > 0 ? (normalizedUsed / normalizedTotal) * 100 : 0);
-        const normalizedPercent = Math.max(0, Math.min(100, Math.round(resolvedPercent)));
-
-        return {
-          key,
-          label,
-          normalizedPercent,
-          quotaClass: computeQuotaClass(resolvedPercent),
-          percentageText: `${normalizedPercent}%`,
-          valueText: t('qoder.usageOverview.usedOfTotal', {
-            used: formatQuotaValue(normalizedUsed),
-            total: formatQuotaValue(normalizedTotal),
-            defaultValue: '{{used}} / {{total}}',
-          }),
-          showProgress: true,
-        };
-      };
-
-      return {
-        planTag: subscription.planTag,
-        planClass: resolveQoderPlanBadgeClass(subscription.planTag),
-        items: [
-          buildQuotaItem(
-            'included',
-            t('qoder.usageOverview.includedCredits', '套餐内 Credits'),
-            subscription.userQuota.used,
-            subscription.userQuota.total,
-            subscription.userQuota.percentage,
-          ),
-          buildQuotaItem(
-            'creditPackage',
-            t('common.shared.columns.creditPackage', 'Credit Package'),
-            subscription.addOnQuota.used,
-            subscription.addOnQuota.total,
-            subscription.addOnQuota.percentage,
-          ),
-          {
-            key: 'sharedCreditPackage',
-            label: t('common.shared.columns.sharedCreditPackage', 'Shared Credit Package'),
-            normalizedPercent: 0,
-            quotaClass: 'high',
-            percentageText: null,
-            valueText: formatQuotaValue(subscription.sharedCreditPackageUsed),
-            showProgress: false,
-          },
-        ],
-        resetText:
-          resetAt != null
-            ? t('trae.quota.resetAt', {
-                date: formatDisplayDate(resetAt),
-                defaultValue: 'Subscription reset: {{date}}',
-              })
-            : null,
-      };
-    },
-    [t],
-  );
 
   const renderQuotaSection = useCallback(
     (account: QoderAccount) => {
-      if (!hasQoderQuotaData(account)) {
+      const hasData = hasQoderQuotaData(account);
+      const quotaError = account.quota_query_last_error?.trim();
+
+      if (!hasData) {
         return (
           <div className="ghcp-quota-section qoder-usage-section">
-            <div className="quota-empty">{t('common.shared.quota.noData', '暂无配额数据')}</div>
+            <div className={`quota-empty quota-query-state ${quotaError ? 'error' : 'empty'}`}>
+              {quotaError ? <CircleAlert size={16} /> : null}
+              <span>{quotaError ? t('common.shared.quota.queryFailed', '配额查询失败') : t('common.shared.quota.noData', '暂无配额数据')}</span>
+            </div>
           </div>
         );
       }
 
-      const quota = resolveQuotaDisplay(account);
+      const groups = getQoderQuotaCategoryGroups(account, t as (key: string, def?: string) => string);
+      const isUsageAbnormal = (() => {
+        const info = account.auth_user_info_raw;
+        if (info && typeof info === 'object') {
+          const status = String((info as Record<string, unknown>).status || (info as Record<string, unknown>).state || '').toLowerCase();
+          if (status === 'banned' || status === 'suspended' || status === 'frozen' || status === 'abnormal') {
+            return true;
+          }
+        }
+        return false;
+      })();
 
       return (
-        <div className="ghcp-quota-section qoder-usage-section">
-          {quota.items.map((item) => (
-            <div
-              key={item.key}
-              className={`quota-item windsurf-credit-item qoder-usage-item ${item.showProgress ? '' : 'is-stat'}`}
-            >
-              <div className="quota-header">
-                <span className="qoder-usage-label-wrap">
-                  <span className="quota-label qoder-usage-label">{item.label}</span>
+        <div className="ghcp-quota-section qoder-usage-section workbuddy-quota-section">
+          {quotaError && (
+            <div className="quota-cache-warning" role="status" title={quotaError}>
+              <CircleAlert size={14} />
+              <div className="quota-cache-warning-content">
+                <span className="quota-cache-warning-title">
+                  {t('codebuddy.quotaQuery.failedUsingCache', '刷新失败，使用缓存')}
                 </span>
-              </div>
-              {item.showProgress && (
-                <div className="quota-bar-track">
-                  <div
-                    className={`quota-bar ${item.quotaClass}`}
-                    style={{ width: `${item.normalizedPercent}%` }}
-                  />
-                </div>
-              )}
-              <div className={`windsurf-credit-meta-row ${item.showProgress ? '' : 'qoder-usage-meta-row-stat'}`}>
-                {item.percentageText ? (
-                  <span className="windsurf-credit-left qoder-usage-meta-primary">{item.percentageText}</span>
-                ) : null}
-                <span className="windsurf-credit-used qoder-usage-meta-secondary">{item.valueText}</span>
+                {account.usage_updated_at && (
+                  <span className="quota-cache-warning-time">
+                    {t('common.shared.quota.lastSuccessfulQuery', '上次成功：{{time}}', {
+                      time: formatQuotaDateTime(account.usage_updated_at),
+                    })}
+                  </span>
+                )}
               </div>
             </div>
-          ))}
-          {quota.resetText && <div className="quota-reset qoder-usage-reset-note">{quota.resetText}</div>}
+          )}
+          <div className="quota-item workbuddy-usage-status-item">
+            <div className="quota-header">
+              <span className="quota-name">{t('codebuddy.usageStatus', '用量状态')}</span>
+              <span className={`quota-value ${isUsageAbnormal ? 'critical' : 'high'}`}>
+                {isUsageAbnormal ? t('codebuddy.usageAbnormal', '异常') : t('codebuddy.usageNormal', '正常')}
+              </span>
+            </div>
+          </div>
+          <div className="quota-item workbuddy-quota-item">
+            <div className="quota-header workbuddy-quota-header" style={{ marginBottom: 6 }}>
+              <span className="quota-name">{t('codebuddy.quotaQuery.sectionTitle', '配额查询')}</span>
+            </div>
+            <CodeBuddyQuotaCategoryList
+              groups={groups}
+              formatNumber={formatNumber}
+              formatDateTime={formatQuotaDateTime}
+            />
+          </div>
         </div>
       );
     },
-    [resolveQuotaDisplay, t],
+    [formatQuotaDateTime, t],
   );
 
   const renderGridCards = useCallback(
@@ -1727,11 +1785,10 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
         const moreTagCount = Math.max(0, accountTags.length - visibleTags.length);
         const plan = getQoderPlanBadge(account);
         const planClass = resolveQoderPlanBadgeClass(plan);
-        const updatedText = resolveUpdatedText(account);
         const createdAtText = formatDateTime(account.created_at);
         const isRefreshing = refreshing === account.id;
         const isInjecting = injecting === account.id;
-        const quotaError = account.quota_query_last_error?.trim();
+        const rewardStatus = resolveQoderRewardStatus(account, rewardNow);
 
         return (
           <div
@@ -1749,20 +1806,35 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
               <span className="account-email" title={maskedEmail}>
                 {maskedEmail}
               </span>
-              {quotaError && (
-                <span className="status-pill warning" title={quotaError}>
-                  <CircleAlert size={12} />
-                  {t('common.shared.quota.queryFailed', '配额查询失败')}
+              {rewardStatus === 'claimable' && (
+                <span
+                  className="status-pill reward-status-pill claimable"
+                  title={t('qoder.claimReward.statusClaimableTip', '今日可领 100 积分')}
+                >
+                  <Gift size={11} />
+                  {t('qoder.claimReward.badgeClaimable', '可领100')}
                 </span>
               )}
-              <span className={`tier-badge ${planClass} raw-value`}>{plan}</span>
+              {rewardStatus === 'claimed' && (
+                <span
+                  className="status-pill reward-status-pill claimed"
+                  title={t('qoder.claimReward.statusClaimedTip', '今日已领取 100 积分')}
+                >
+                  <Gift size={11} />
+                  {t('qoder.claimReward.badgeClaimed', '已领100')}
+                </span>
+              )}
+              {rewardStatus === 'none' && (
+                <span
+                  className="status-pill reward-status-pill none"
+                  title={t('qoder.claimReward.statusNoneTip', '账号暂无活动/不可领取')}
+                >
+                  <Gift size={11} />
+                  {t('qoder.claimReward.badgeNone', '无活动')}
+                </span>
+              )}
               {isCurrent && <span className="current-tag">{t('accounts.status.current', '当前')}</span>}
-            </div>
-
-            <div className="account-sub-line qoder-account-subline">
-              <span className="kiro-table-subline" title={createdAtText}>
-                {updatedText}
-              </span>
+              <span className={`tier-badge ${planClass} raw-value`}>{plan}</span>
             </div>
 
             {accountTags.length > 0 && (
@@ -1779,8 +1851,15 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
             {renderQuotaSection(account)}
 
             <div className="card-footer">
-              <span className="card-date qoder-card-created-at" title={createdAtText}>
-                {updatedText}
+              <span
+                className="card-date qoder-card-created-at"
+                title={`${t('common.created', '创建于')}: ${createdAtText}${
+                  account.usage_updated_at
+                    ? `\n${t('common.updated', '更新于')}: ${formatDateTime(account.usage_updated_at)}`
+                    : ''
+                }`}
+              >
+                {formatCardDate(account.created_at)}
               </span>
               <div className="card-actions">
                 <button
@@ -1791,6 +1870,33 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
                   disabled={isInjecting || deleting}
                 >
                   {isInjecting ? <RotateCw size={14} className="loading-spinner" /> : <Play size={14} />}
+                </button>
+                <button
+                  id={`qoder-btn-reward-${account.id}`}
+                  className={`card-action-btn reward-btn ${
+                    rewardStatus === 'claimed'
+                      ? 'is-claimed'
+                      : rewardStatus === 'none'
+                        ? 'is-none'
+                        : rewardStatus === 'claimable'
+                          ? 'has-reward'
+                          : ''
+                  }`}
+                  onClick={(e) => void handleClaimReward(account.id, e.currentTarget)}
+                  title={
+                    rewardStatus === 'claimed'
+                      ? t('qoder.claimReward.alreadyClaimedTip', '今日已领取 100 积分')
+                      : rewardStatus === 'none'
+                        ? t('qoder.claimReward.statusNoneTip', '账号暂无活动/不可领取')
+                        : t('qoder.claimReward.buttonTitle', '领取每日 100 积分')
+                  }
+                  disabled={claimingRewardIds.has(account.id) || isInjecting || deleting}
+                >
+                  {claimingRewardIds.has(account.id) ? (
+                    <RotateCw size={14} className="loading-spinner" />
+                  ) : (
+                    <Gift size={14} />
+                  )}
                 </button>
                 <button
                   id={`qoder-btn-tag-${account.id}`}
@@ -1820,6 +1926,19 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
                   <Download size={14} />
                 </button>
                 <button
+                  id={`qoder-btn-webview-${account.id}`}
+                  className="card-action-btn"
+                  onClick={(e) => void handleOpenWebview(account.id, e.currentTarget)}
+                  title={t('workbuddy.webview.open', '打开网页会话')}
+                  disabled={webviewingId === account.id || isInjecting || deleting}
+                >
+                  {webviewingId === account.id ? (
+                    <RotateCw size={14} className="loading-spinner" />
+                  ) : (
+                    <Globe size={14} />
+                  )}
+                </button>
+                <button
                   id={`qoder-btn-delete-${account.id}`}
                   className="card-action-btn danger"
                   onClick={(e) => void handleDeleteAccounts([account.id], e.currentTarget)}
@@ -1834,22 +1953,25 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
         );
       }),
     [
+      claimingRewardIds,
       currentAccountId,
       deleting,
       exportModal.preparing,
       exportModal.saving,
+      handleClaimReward,
       handleDeleteAccounts,
       handleExportByIds,
+      handleOpenWebview,
       handleRefresh,
       handleSwitch,
       injecting,
       maskAccountText,
       refreshing,
       renderQuotaSection,
-      resolveUpdatedText,
       selected,
       t,
       toggleSelect,
+      webviewingId,
     ],
   );
 
@@ -1858,12 +1980,12 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
       items.map((account) => {
         const plan = getQoderPlanBadge(account);
         const planClass = resolveQoderPlanBadgeClass(plan);
-        const quota = resolveQuotaDisplay(account);
         const isCurrent = currentAccountId === account.id;
         const isSelected = selected.has(account.id);
         const isRefreshing = refreshing === account.id;
         const isInjecting = injecting === account.id;
         const quotaError = account.quota_query_last_error?.trim();
+        const rewardStatus = resolveQoderRewardStatus(account, rewardNow);
         return (
           <tr key={groupKey ? `${groupKey}-${account.id}` : account.id} className={isCurrent ? 'current' : undefined}>
             <td>
@@ -1877,6 +1999,33 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
               <div className="account-cell">
                 <div className="account-main-line">
                   {maskAccountText(getQoderAccountDisplayEmail(account))}
+                  {rewardStatus === 'claimable' && (
+                    <span
+                      className="status-pill reward-status-pill claimable"
+                      title={t('qoder.claimReward.statusClaimableTip', '今日可领 100 积分')}
+                    >
+                      <Gift size={11} />
+                      {t('qoder.claimReward.badgeClaimable', '可领100')}
+                    </span>
+                  )}
+                  {rewardStatus === 'claimed' && (
+                    <span
+                      className="status-pill reward-status-pill claimed"
+                      title={t('qoder.claimReward.statusClaimedTip', '今日已领取 100 积分')}
+                    >
+                      <Gift size={11} />
+                      {t('qoder.claimReward.badgeClaimed', '已领100')}
+                    </span>
+                  )}
+                  {rewardStatus === 'none' && (
+                    <span
+                      className="status-pill reward-status-pill none"
+                      title={t('qoder.claimReward.statusNoneTip', '账号暂无活动/不可领取')}
+                    >
+                      <Gift size={11} />
+                      {t('qoder.claimReward.badgeNone', '无活动')}
+                    </span>
+                  )}
                 </div>
                 {quotaError && (
                   <div className="account-sub-line">
@@ -1894,33 +2043,11 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
             </td>
             <td>
               <div className="qoder-table-quota">
-                {quota.items.map((item) => (
-                  <div
-                    key={item.key}
-                    className={`quota-item qoder-table-quota-item ${item.showProgress ? '' : 'is-stat'}`}
-                  >
-                    <div className="qoder-usage-summary-row">
-                      <span className="qoder-usage-label-wrap">
-                        <span className="quota-name qoder-usage-label">{item.label}</span>
-                      </span>
-                      {item.percentageText && (
-                        <span className={`quota-value qoder-table-quota-pct ${item.quotaClass}`}>
-                          {item.percentageText}
-                        </span>
-                      )}
-                      <span className="windsurf-credit-left qoder-table-quota-total">{item.valueText}</span>
-                    </div>
-                    {item.showProgress && (
-                      <div className="quota-progress-track">
-                        <div
-                          className={`quota-progress-bar ${item.quotaClass}`}
-                          style={{ width: `${item.normalizedPercent}%` }}
-                        />
-                      </div>
-                    )}
-                  </div>
-                ))}
-                {quota.resetText && <div className="quota-reset qoder-table-reset">{quota.resetText}</div>}
+                <CodeBuddyQuotaCategoryList
+                  groups={getQoderQuotaCategoryGroups(account, t as (key: string, def?: string) => string)}
+                  formatNumber={formatNumber}
+                  formatDateTime={formatQuotaDateTime}
+                />
               </div>
             </td>
             <td>{formatDateTime(account.created_at)}</td>
@@ -1945,6 +2072,33 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
                   {isInjecting ? <RotateCw size={14} className="loading-spinner" /> : <Play size={14} />}
                 </button>
                 <button
+                  id={`qoder-list-btn-reward-${account.id}`}
+                  className={`action-btn reward-btn ${
+                    rewardStatus === 'claimed'
+                      ? 'is-claimed'
+                      : rewardStatus === 'none'
+                        ? 'is-none'
+                        : rewardStatus === 'claimable'
+                          ? 'has-reward'
+                          : ''
+                  }`}
+                  onClick={(e) => void handleClaimReward(account.id, e.currentTarget)}
+                  title={
+                    rewardStatus === 'claimed'
+                      ? t('qoder.claimReward.alreadyClaimedTip', '今日已领取 100 积分')
+                      : rewardStatus === 'none'
+                        ? t('qoder.claimReward.statusNoneTip', '账号暂无活动/不可领取')
+                        : t('qoder.claimReward.buttonTitle', '领取每日 100 积分')
+                  }
+                  disabled={claimingRewardIds.has(account.id) || isInjecting || deleting}
+                >
+                  {claimingRewardIds.has(account.id) ? (
+                    <RotateCw size={14} className="loading-spinner" />
+                  ) : (
+                    <Gift size={14} />
+                  )}
+                </button>
+                <button
                   id={`qoder-list-btn-tag-${account.id}`}
                   className="action-btn"
                   onClick={() => setShowTagModal(account.id)}
@@ -1963,6 +2117,19 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
                   <Upload size={14} />
                 </button>
                 <button
+                  id={`qoder-list-btn-webview-${account.id}`}
+                  className="action-btn"
+                  onClick={(e) => void handleOpenWebview(account.id, e.currentTarget)}
+                  title={t('workbuddy.webview.open', '打开网页会话')}
+                  disabled={webviewingId === account.id || isInjecting || deleting}
+                >
+                  {webviewingId === account.id ? (
+                    <RotateCw size={14} className="loading-spinner" />
+                  ) : (
+                    <Globe size={14} />
+                  )}
+                </button>
+                <button
                   id={`qoder-list-btn-delete-${account.id}`}
                   className="action-btn danger"
                   onClick={(e) => void handleDeleteAccounts([account.id], e.currentTarget)}
@@ -1977,21 +2144,25 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
         );
       }),
     [
+      claimingRewardIds,
       currentAccountId,
       deleting,
       exportModal.preparing,
       exportModal.saving,
+      formatQuotaDateTime,
+      handleClaimReward,
       handleDeleteAccounts,
       handleExportByIds,
+      handleOpenWebview,
       handleRefresh,
       handleSwitch,
       injecting,
       maskAccountText,
       refreshing,
-      resolveQuotaDisplay,
       selected,
       t,
       toggleSelect,
+      webviewingId,
     ],
   );
 
@@ -2138,6 +2309,49 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
             )}
           </div>
 
+          <div className="sr-only" role="status">
+            {webSyncNotice?.platformId === activeVariant && t('qoder.webSync.title', '积分包明细与到期时间暂未获取')}
+          </div>
+          {webSyncNotice?.platformId === activeVariant && (
+            <div className="ghcp-flow-notice qoder-web-sync-notice" role="note">
+              <div className="qoder-web-sync-notice-header">
+                <div className="ghcp-flow-notice-title">
+                  <Info size={16} aria-hidden="true" />
+                  <span>{t('qoder.webSync.title', '积分包明细与到期时间暂未获取')}</span>
+                </div>
+                <div className="qoder-web-sync-notice-actions">
+                  <button type="button" className="btn btn-secondary btn-sm" onClick={suppressWebSyncNotice}>
+                    {t('qoder.webSync.dontShowAgain', '不再提示')}
+                  </button>
+                  <button type="button" className="btn btn-ghost icon-only" onClick={() => setWebSyncNotice(null)} aria-label={t('common.close', '关闭')}>
+                    <X size={14} aria-hidden="true" />
+                  </button>
+                </div>
+              </div>
+              <div className="ghcp-flow-notice-body">
+                <div className="ghcp-flow-notice-desc">
+                  {t('qoder.webSync.description', '账号授权成功，但网页数据获取失败，无法查询具体积分包及到期时间')}
+                </div>
+                {webSyncNotice.requiresChromePermission ? (
+                  <div className="qoder-web-sync-permission-guide">
+                    <div className="ghcp-flow-notice-title">{t('qoder.webSync.macTitle', 'macOS 开启方法')}</div>
+                    <ol className="ghcp-flow-notice-list">
+                      <li>{t('qoder.webSync.macSteps.settings', '打开“系统设置 → 隐私与安全性 → 完全磁盘访问权限”。')}</li>
+                      <li>{t('qoder.webSync.macSteps.application', '点击“＋”，添加当前运行的 Cockpit，并开启开关。')}</li>
+                      <li>{t('qoder.webSync.macSteps.development', '开发版由终端或 IDE 启动时，macOS 可能把权限归到启动它的软件，需要给对应终端或 IDE 开启。该权限覆盖其他应用数据，请只授权你信任的软件。')}</li>
+                      <li>{t('qoder.webSync.macSteps.retry', '完全退出并重新打开获授权的软件和 Cockpit；保持 Chrome 登录对应账号，再点击账号卡片的地球按钮重试。若出现 Chrome 密钥的钥匙串提示，请允许读取。')}</li>
+                    </ol>
+                  </div>
+                ) : (
+                  <details className="qoder-web-sync-permission-guide ghcp-flow-notice-desc">
+                    <summary>{t('qoder.webSync.reason', '查看原因')}</summary>
+                    <p>{webSyncNotice.error}</p>
+                  </details>
+                )}
+              </div>
+            </div>
+          )}
+
           {message && (
             <div className={`message-bar ${message.tone === 'error' ? 'error' : 'success'}`}>
               {message.text}
@@ -2280,6 +2494,15 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
                 title={t('common.shared.addAccount')}
               >
                 <Plus size={14} />
+              </button>
+              <button
+                className={`btn btn-secondary icon-only reward-btn ${claimableCount > 0 ? 'has-reward' : ''}`}
+                onClick={() => setShowBatchClaimModal(true)}
+                disabled={filteredAccounts.length === 0 || claimingRewardIds.size > 0}
+                title={t('qoder.claimReward.batchTitle', '一键领取每日 100 积分')}
+              >
+                <Gift size={14} />
+                {claimableCount > 0 && <span className="reward-count-badge">{claimableCount}</span>}
               </button>
               <button
                 id="qoder-btn-refresh-all"
@@ -2635,6 +2858,17 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
         onOpenSavedDirectory={exportModal.openSavedDirectory}
         onCopySavedPath={exportModal.copySavedPath}
       />
+
+      {showBatchClaimModal && (
+        <QoderBatchClaimModal
+          accounts={filteredAccounts}
+          onClose={() => setShowBatchClaimModal(false)}
+          onFinished={async () => {
+            await store.fetchAccounts();
+          }}
+          maskAccountText={maskAccountText}
+        />
+      )}
 
       {renderBubble()}
     </div>

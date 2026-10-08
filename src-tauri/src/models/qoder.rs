@@ -18,11 +18,27 @@ const PUBLIC_QUOTA_FIELDS: &[&str] = &[
     "available", "left", "percentage", "usagePercent", "usage_percentage", "unit",
 ];
 const PUBLIC_PACKAGE_FIELDS: &[&str] = &["used", "usage", "consumed", "count"];
+const PUBLIC_DEDICATED_PACKAGE_FIELDS: &[&str] = &[
+    "id", "name", "description", "total", "used", "remaining", "percentage",
+    "unit", "expiresAt", "expires_at", "available", "status",
+];
 
 fn public_raw_payload(raw: Option<Value>) -> Option<Value> {
     let Value::Object(object) = raw? else { return None; };
     let mut public = Map::new();
     for (key, value) in object {
+        if matches!(key.as_str(), "dedicatedResourcePackages" | "dedicated_resource_packages") {
+            if let Some(packages) = value.as_array() {
+                let safe = packages.iter().filter_map(Value::as_object).map(|package| {
+                    Value::Object(package.iter().filter(|(name, value)| {
+                        PUBLIC_DEDICATED_PACKAGE_FIELDS.contains(&name.as_str())
+                            && (value.is_string() || value.is_number() || value.is_boolean())
+                    }).map(|(name, value)| (name.clone(), value.clone())).collect())
+                }).collect();
+                public.insert(key, Value::Array(safe));
+            }
+            continue;
+        }
         if PUBLIC_RAW_SCALARS.contains(&key.as_str()) {
             if value.is_string() || value.is_number() || value.is_boolean() {
                 public.insert(key, value);
@@ -90,12 +106,24 @@ pub struct QoderAccount {
     pub usage_updated_at: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reward_claim_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reward_window_end_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reward_status_updated_at: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_user_info_raw: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_user_plan_raw: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_credit_usage_raw: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_session_cookie: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_quota_raw: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_quota_updated_at: Option<i64>,
     pub created_at: i64,
     pub last_used: i64,
 }
@@ -157,6 +185,7 @@ impl QoderAccount {
         self.auth_user_info_raw = public_raw_payload(self.auth_user_info_raw);
         self.auth_user_plan_raw = public_raw_payload(self.auth_user_plan_raw);
         self.auth_credit_usage_raw = public_raw_payload(self.credit_usage().cloned());
+        self.web_session_cookie = None;
         self
     }
 
@@ -166,6 +195,7 @@ impl QoderAccount {
         self.auth_user_info_raw = None;
         self.auth_user_plan_raw = None;
         self.auth_credit_usage_raw = None;
+        self.web_session_cookie = None;
         self
     }
 }
@@ -182,6 +212,10 @@ pub struct QoderAccountSummary {
     pub plan_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reward_claim_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reward_window_end_at: Option<i64>,
     pub created_at: i64,
     pub last_used: i64,
 }
@@ -227,9 +261,31 @@ impl QoderAccount {
             user_id: self.user_id.clone(),
             plan_type: self.plan_type_for_display().map(str::to_string),
             tags: self.tags.clone(),
+            reward_claim_status: self.reward_claim_status.clone(),
+            reward_window_end_at: self.reward_window_end_at,
             created_at: self.created_at,
             last_used: self.last_used,
         }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QoderClaimRewardResult {
+    pub account_id: String,
+    pub success: bool,
+    pub replayed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub amount: Option<i64>,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<QoderAccount>,
+}
+
+impl QoderClaimRewardResult {
+    pub fn for_ipc(mut self) -> Self {
+        self.account = self.account.map(QoderAccount::for_ipc);
+        self
     }
 }
 
@@ -260,6 +316,58 @@ mod tests {
         account_with_real_plan.auth_user_plan_raw = Some(serde_json::json!({"plan": "PRO"}));
         account_with_real_plan.plan_type = Some("PRO".to_string());
         assert_eq!(account_with_real_plan.plan_type_for_display(), Some("PRO"));
+    }
+
+    #[test]
+    fn ipc_keeps_dedicated_credit_details_but_drops_nested_credentials() {
+        let account: QoderAccount = serde_json::from_value(serde_json::json!({
+            "id": "fixture", "email": "fixture@example.invalid", "created_at": 1, "last_used": 1,
+            "auth_credit_usage_raw": { "qoderUsage": {
+                "dedicatedResourcePackages": [{
+                    "id": "daily-package", "name": "Daily Credits", "total": 100, "used": 10,
+                    "expiresAt": 1793289599000i64, "token": "synthetic-secret",
+                    "extra": {"refreshToken": "synthetic-secret"}
+                }]
+            }}
+        })).unwrap();
+        let visible = account.clone().for_ipc();
+        let raw = visible.auth_credit_usage_raw.as_ref().unwrap();
+        assert_eq!(raw["dedicatedResourcePackages"][0]["name"], "Daily Credits");
+        assert_eq!(raw["dedicatedResourcePackages"][0]["total"], 100);
+        assert_eq!(raw["dedicatedResourcePackages"][0]["expiresAt"], 1793289599000i64);
+        assert!(!raw.to_string().contains("synthetic-secret"));
+        assert_eq!(visible.clone().for_ipc().auth_credit_usage_raw, visible.auth_credit_usage_raw);
+        assert!(account.auth_credit_usage_raw.unwrap().to_string().contains("synthetic-secret"));
+    }
+
+    #[test]
+    fn ipc_account_keeps_display_data_without_auth_tokens() {
+        let account: QoderAccount = serde_json::from_value(serde_json::json!({
+            "id": "qoder-app-one",
+            "email": "user@example.com",
+            "created_at": 1,
+            "last_used": 1,
+            "auth_user_info_raw": {
+                "token": "secret-access",
+                "refreshToken": "secret-refresh",
+                "job_refresh_token": "secret-job",
+                "security_mobile": "13800001111",
+                "userQuota": { "remaining": 100, "token": "secret-nested" }
+            },
+            "auth_user_plan_raw": {
+                "plan": "pro", "planName": "Pro", "accessToken": "secret-plan"
+            },
+            "auth_credit_usage_raw": { "userQuota": { "total": 200, "used": 100 } }
+        })).expect("account fixture");
+        let stored = account.clone();
+        let visible = serde_json::to_value(account.for_ipc()).expect("serialize IPC account");
+        assert_eq!(visible["auth_user_info_raw"]["security_mobile"].as_str(), Some("13800001111"));
+        assert_eq!(visible["auth_user_info_raw"]["userQuota"]["remaining"].as_i64(), Some(100));
+        assert_eq!(visible["auth_user_plan_raw"]["plan"].as_str(), Some("pro"));
+        assert_eq!(visible["auth_user_plan_raw"]["planName"].as_str(), Some("Pro"));
+        let ipc_text = visible.to_string();
+        assert!(!ipc_text.contains("secret-"));
+        assert_eq!(stored.auth_user_info_raw.unwrap()["refreshToken"].as_str(), Some("secret-refresh"));
     }
 
     #[test]

@@ -1340,9 +1340,75 @@
   margin-top: -2px;
 }
 
-.qoder-accounts-page .qoder-card-created-at {
+.qoder-accounts-page .qoder-web-sync-notice-header,
+.qoder-accounts-page .qoder-web-sync-notice-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.qoder-accounts-page .qoder-web-sync-notice-header {
+  justify-content: space-between;
+  padding: 4px 6px;
+}
+
+.qoder-accounts-page .qoder-web-sync-permission-guide {
+  margin-top: 10px;
+  overflow-wrap: anywhere;
+}
+
+.qoder-accounts-page .qoder-web-sync-permission-guide summary {
+  cursor: pointer;
+}
+
+.qoder-accounts-page .ghcp-accounts-grid {
+  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+}
+
+.qoder-accounts-page .ghcp-account-card {
+  padding: 18px 16px;
+}
+
+.qoder-accounts-page .ghcp-account-card .card-top {
+  gap: 6px;
+  flex-wrap: nowrap;
+}
+
+.qoder-accounts-page .ghcp-account-card .card-footer {
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.qoder-accounts-page .ghcp-account-card .qoder-card-created-at {
   font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.25;
+  color: var(--text-secondary);
+  white-space: pre-line;
+  flex-shrink: 0;
   letter-spacing: -0.2px;
+}
+
+.qoder-accounts-page .ghcp-account-card .card-actions {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.qoder-accounts-page .ghcp-account-card .card-action-btn {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  flex-shrink: 0;
+  border-radius: var(--radius-sm, 4px);
+}
+
+.qoder-accounts-page .ghcp-account-card .card-action-btn svg {
+  width: 13px;
+  height: 13px;
 }
 
 .qoder-accounts-page .qoder-usage-section {

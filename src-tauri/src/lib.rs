@@ -693,6 +693,9 @@ pub fn run() {
 
             apply_startup_minimized(&app.handle());
             modules::workbuddy_auto_checkin::start_auto_checkin_scheduler(app.handle().clone());
+            modules::qoder_auto_checkin::start_scheduler(
+                app.handle().clone(), commands::qoder::run_reward_claim,
+            );
 
             Ok(())
         })
@@ -783,7 +786,7 @@ pub fn run() {
             }
             _ => {}
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(modules::qoder_webview::guard_commands(tauri::generate_handler![
             commands::codex_pelican::codex_pelican_start,
             commands::codex_pelican::codex_pelican_retry,
             commands::codex_pelican::codex_pelican_active,
@@ -1392,6 +1395,19 @@ pub fn run() {
             commands::qoder::inject_qoder_account,
             commands::qoder::update_qoder_account_tags,
             commands::qoder::get_qoder_accounts_index_path,
+            commands::qoder::claim_qoder_reward,
+            commands::qoder::start_qoder_reward_batch,
+            commands::qoder::cancel_qoder_reward_batch,
+            commands::qoder::claim_qoder_batch_reward,
+            commands::qoder::get_qoder_auto_checkin_settings,
+            commands::qoder::save_qoder_auto_checkin_settings,
+            commands::qoder::check_qoder_reward_status,
+            commands::qoder::batch_check_qoder_reward_statuses,
+            commands::qoder::open_qoder_webview,
+            commands::qoder::close_qoder_webview,
+            commands::qoder::list_qoder_webview_sessions,
+            commands::qoder::sync_qoder_web_quota_from_webview,
+            commands::qoder::bind_qoder_web_cookie,
             // Zed Commands
             commands::zed::list_zed_accounts,
             commands::zed::delete_zed_account,
@@ -1626,7 +1642,7 @@ pub fn run() {
             commands::antigravity_legacy_instance::antigravity_legacy_stop_instance,
             commands::antigravity_legacy_instance::antigravity_legacy_open_instance_window,
             commands::antigravity_legacy_instance::antigravity_legacy_close_all_instances,
-        ])
+        ]))
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 

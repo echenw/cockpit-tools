@@ -1,7 +1,7 @@
 use std::time::Instant;
 use tauri::{AppHandle, Emitter};
 
-use crate::models::qoder::{QoderAccount, QoderOAuthStartResponse};
+use crate::models::qoder::{QoderAccount, QoderClaimRewardResult, QoderOAuthStartResponse};
 use crate::modules::qoder_variant::QoderVariantKind;
 use crate::modules::{logger, qoder_account, qoder_oauth};
 
@@ -61,7 +61,32 @@ async fn refresh_account_by_variant(
         }
     };
 
-    Ok(refreshed_account)
+    // 刷新时同步拉取 100 积分活动状态（弱依赖，失败不阻断账号正常刷新）
+    let account_with_campaign = match qoder_oauth::query_qoder_campaign_status(account_id).await {
+        Ok(account_with_campaign) => account_with_campaign,
+        Err(err) => {
+            logger::log_warn(&format!(
+                "[Qoder Refresh] 同步活动状态失败（沿用账号）: account_id={}, error={}",
+                account_id, err
+            ));
+            refreshed_account
+        }
+    };
+
+    Ok(try_refresh_qoder_web_quota(account_with_campaign).await)
+}
+
+async fn try_refresh_qoder_web_quota(account: QoderAccount) -> QoderAccount {
+    if account.web_session_cookie.as_deref().filter(|c| !c.trim().is_empty()).is_none() {
+        return account;
+    }
+    match crate::modules::qoder_webview::refresh_web_quota(&account.id, None).await {
+        Ok(updated) => return updated,
+        Err(err) => logger::log_warn(&format!(
+            "[Qoder Refresh] 网页配额查询失败: account_id={}, error={}", account.id, err
+        )),
+    }
+    account
 }
 
 /// 仅 CN IDE 保留刷新写回；App 由官方客户端管理当前会话，禁止后台热写认证文件。
@@ -122,6 +147,16 @@ async fn run_refresh_write_back(refreshed: Vec<(QoderVariantKind, String)>) {
                 "[Qoder Refresh] 变体当前账号回写失败（刷新已成功，仅告警）: variant={}, account_id={}, error={}",
                 variant_key, account_id, err
             ));
+        }
+    }
+}
+
+async fn write_back_current_account_if_auth_changed(before: Option<QoderAccount>, account_id: &str) {
+    if let (Some(before), Some(after)) = (before, qoder_account::load_account(account_id)) {
+        if before.auth_user_info_raw != after.auth_user_info_raw {
+            if let Ok(kind) = qoder_account::account_variant_kind(&after) {
+                run_refresh_write_back(vec![(kind, account_id.to_string())]).await;
+            }
         }
     }
 }
@@ -279,6 +314,7 @@ pub async fn qoder_oauth_login_complete(
             variant, account_variant
         ));
     }
+    crate::modules::qoder_webview::sync_after_login(app.clone(), account.id.clone());
     let _ = crate::modules::tray::update_tray_menu(&app);
     logger::log_info(&format!(
         "[Qoder OAuth] complete 命令完成: variant={}, login_id={}, account_id={}, elapsed={}ms",
@@ -491,6 +527,150 @@ pub fn update_qoder_account_tags(
 #[tauri::command]
 pub fn get_qoder_accounts_index_path() -> Result<String, String> {
     qoder_account::accounts_index_path_string()
+}
+
+#[tauri::command]
+pub async fn claim_qoder_reward(
+    account_id: String,
+) -> Result<QoderClaimRewardResult, String> {
+    run_reward_claim(account_id, None).await?
+        .ok_or_else(|| "签到任务已取消".to_string())
+}
+
+pub(crate) async fn run_reward_claim(
+    account_id: String,
+    scheduled_date: Option<String>,
+) -> Result<Option<QoderClaimRewardResult>, String> {
+    run_reward_claim_with_cancellation(account_id, scheduled_date, None).await
+}
+
+#[tauri::command]
+pub fn start_qoder_reward_batch() -> Result<String, String> {
+    crate::modules::qoder_auto_checkin::start_manual_batch()
+}
+
+#[tauri::command]
+pub fn cancel_qoder_reward_batch(batch_id: String) -> Result<(), String> {
+    crate::modules::qoder_auto_checkin::cancel_manual_batch(&batch_id)
+}
+
+#[tauri::command]
+pub async fn claim_qoder_batch_reward(
+    account_id: String,
+    batch_id: String,
+) -> Result<Option<QoderClaimRewardResult>, String> {
+    let Some(cancellation) = crate::modules::qoder_auto_checkin::manual_batch_cancellation(&batch_id)? else {
+        return Ok(None);
+    };
+    run_reward_claim_with_cancellation(account_id, None, Some(cancellation)).await
+}
+
+async fn run_reward_claim_with_cancellation(
+    account_id: String,
+    scheduled_date: Option<String>,
+    cancellation: Option<crate::modules::qoder_auto_checkin::ClaimCancellation>,
+) -> Result<Option<QoderClaimRewardResult>, String> {
+    let Some(_permit) = crate::modules::qoder_auto_checkin::acquire_claim_slot(
+        &account_id, scheduled_date.as_deref(), cancellation,
+    ).await? else {
+        return Ok(None);
+    };
+    let before = qoder_account::load_account(&account_id);
+    let result = qoder_oauth::claim_daily_reward(&account_id).await;
+    write_back_current_account_if_auth_changed(before, &account_id).await;
+    let mut result = result?;
+    // 领取中的用量查询会使网页配额缓存失效；与普通刷新一样，
+    // 用已验证的网页会话同步礼包明细后再返回账号。
+    if let Some(account) = result.account.take() {
+        result.account = Some(try_refresh_qoder_web_quota(account).await);
+    }
+    Ok(Some(result.for_ipc()))
+}
+
+#[tauri::command]
+pub fn get_qoder_auto_checkin_settings() -> Result<crate::modules::qoder_auto_checkin::QoderAutoCheckinSettings, String> {
+    crate::modules::qoder_auto_checkin::get_settings()
+}
+
+#[tauri::command]
+pub fn save_qoder_auto_checkin_settings(
+    settings: crate::modules::qoder_auto_checkin::QoderAutoCheckinSettings,
+) -> Result<crate::modules::qoder_auto_checkin::QoderAutoCheckinSettings, String> {
+    crate::modules::qoder_auto_checkin::save_settings(settings)
+}
+
+#[tauri::command]
+pub async fn check_qoder_reward_status(
+    account_id: String,
+) -> Result<QoderAccount, String> {
+    let result = qoder_oauth::query_qoder_campaign_status(&account_id).await;
+    result.map(QoderAccount::for_ipc)
+}
+
+#[tauri::command]
+pub async fn batch_check_qoder_reward_statuses(
+    account_ids: Vec<String>,
+) -> Result<Vec<QoderAccount>, String> {
+    let mut results = Vec::new();
+    for id in account_ids {
+        match qoder_oauth::query_qoder_campaign_status(&id).await {
+            Ok(acc) => results.push(acc.for_ipc()),
+            Err(err) => {
+                logger::log_warn(&format!("[Qoder Campaign] 查询活动状态失败: id={}, err={}", id, err));
+                // Only confirmed queries are returned. Existing snapshots remain in storage;
+                // the caller must be able to distinguish failures for delayed retry.
+            }
+        }
+    }
+    Ok(results)
+}
+
+#[tauri::command]
+pub async fn open_qoder_webview(
+    app: AppHandle,
+    account_id: String,
+) -> Result<crate::modules::qoder_webview::QoderWebviewSessionInfo, String> {
+    crate::modules::qoder_webview::open_qoder_webview(app, account_id).await
+}
+
+#[tauri::command]
+pub async fn close_qoder_webview(
+    app: AppHandle,
+    account_id: String,
+) -> Result<(), String> {
+    crate::modules::qoder_webview::close_qoder_webview(app, account_id).await
+}
+
+#[tauri::command]
+pub fn list_qoder_webview_sessions(
+    app: AppHandle,
+) -> Result<Vec<crate::modules::qoder_webview::QoderWebviewSessionInfo>, String> {
+    crate::modules::qoder_webview::list_qoder_webview_sessions(app)
+}
+
+#[tauri::command]
+pub async fn sync_qoder_web_quota_from_webview(
+    window: tauri::WebviewWindow,
+) -> Result<(), String> {
+    crate::modules::qoder_webview::sync_qoder_web_quota(window).await?;
+    // 远程页面不接收本地账号记录；本地页面通过事件重新读取。
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn bind_qoder_web_cookie(
+    app: AppHandle,
+    account_id: String,
+    cookie: String,
+) -> Result<QoderAccount, String> {
+    let clean_cookie = cookie.trim().to_string();
+    if clean_cookie.is_empty() {
+        return Err("Cookie 不能为空".to_string());
+    }
+    let updated = crate::modules::qoder_webview::refresh_web_quota(&account_id, Some(clean_cookie)).await?;
+    let _ = crate::modules::tray::update_tray_menu(&app);
+    let _ = app.emit("qoder-accounts-updated", ());
+    Ok(updated.for_ipc())
 }
 
 #[cfg(test)]

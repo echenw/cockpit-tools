@@ -1,4 +1,7 @@
-export interface QoderAccount {  id: string;
+import type { QuotaCategoryGroup, OfficialQuotaResource } from './codebuddy-suite';
+
+export interface QoderAccount {
+  id: string;
   /** 最近的授权/凭据来源；同地区账号同时适用于 App 和 IDE。 */
   variant?: string | null;
   legacy_ids?: string[];
@@ -14,11 +17,43 @@ export interface QoderAccount {  id: string;
   quota_query_last_error_at?: number | null;
   usage_updated_at?: number | null;
   tags?: string[] | null;
+  reward_claim_status?: string | null;
+  reward_window_end_at?: number | null;
+  reward_status_updated_at?: number | null;
   auth_user_info_raw?: unknown;
   auth_user_plan_raw?: unknown;
   auth_credit_usage_raw?: unknown;
+  web_quota_raw?: unknown;
+  web_quota_updated_at?: number | null;
   created_at: number;
   last_used: number;
+}
+
+export type QoderRewardStatus = 'claimable' | 'claimed' | 'none' | 'unknown';
+
+export function getQoderRewardWindowEndMs(account: QoderAccount): number | null {
+  return normalizeTimestampMs(account.reward_window_end_at);
+}
+
+export function resolveQoderRewardStatus(account: QoderAccount, now = Date.now()): QoderRewardStatus {
+  if (!account.reward_claim_status) {
+    return 'unknown';
+  }
+  const windowEndMs = getQoderRewardWindowEndMs(account);
+  if (windowEndMs != null && now >= windowEndMs) {
+    return 'unknown';
+  }
+  const statusUpper = account.reward_claim_status.toUpperCase();
+  if (statusUpper === 'CLAIMABLE') {
+    return 'claimable';
+  }
+  if (statusUpper === 'CLAIMED') {
+    return 'claimed';
+  }
+  if (statusUpper === 'NONE') {
+    return 'none';
+  }
+  return 'unknown';
 }
 
 interface UnknownRecord {
@@ -442,7 +477,272 @@ export function getQoderUsageOverview(account: QoderAccount): QoderUsageOverview
 }
 
 export function hasQoderQuotaData(account: QoderAccount): boolean {
-  return account.auth_credit_usage_raw != null;
+  return getCurrentWebQuotaPayload(account) != null || account.auth_credit_usage_raw != null
+    || getQoderSubscriptionInfo(account).sharedCreditPackageUsed != null;
+}
+
+interface QoderWebQuotaDetailItem {
+  id?: string;
+  package_id?: string;
+  name?: string;
+  package_name?: string;
+  source?: string;
+  limit_value?: number;
+  used_value?: number;
+  effective_at?: number;
+  expires_at?: number;
+}
+
+interface QoderWebQuotaPayload {
+  account_quota?: {
+    limit_value?: number;
+    used_value?: number;
+    reset_time?: number;
+  };
+  plan_quota?: {
+    quota_summary?: {
+      limit_value?: number;
+      used_value?: number;
+      remaining_value?: number;
+    };
+    quota_detail?: QoderWebQuotaDetailItem[];
+  };
+  resource_package_quota?: {
+    quota_summary?: {
+      limit_value?: number;
+      used_value?: number;
+      remaining_value?: number;
+    };
+    limit_value?: number;
+    used_value?: number;
+    quota_detail?: QoderWebQuotaDetailItem[];
+  };
+  nextResetAt?: number;
+  lastResetAt?: number;
+}
+
+function getCurrentWebQuotaPayload(account: QoderAccount): QoderWebQuotaPayload | null {
+  if (!isRecord(account.web_quota_raw)) return null;
+  const webUpdatedAt = normalizeTimestampMs(account.web_quota_updated_at);
+  const usageUpdatedAt = normalizeTimestampMs(account.usage_updated_at);
+  if (usageUpdatedAt != null && (webUpdatedAt == null || webUpdatedAt < usageUpdatedAt)) {
+    return null;
+  }
+  const payload = isRecord(account.web_quota_raw.data) ? account.web_quota_raw.data : account.web_quota_raw;
+  return payload as QoderWebQuotaPayload;
+}
+
+export function getQoderQuotaCategoryGroups(
+  account: QoderAccount,
+  t: (key: string, defaultValue?: string) => string,
+): QuotaCategoryGroup[] {
+  const webPayload = getCurrentWebQuotaPayload(account);
+
+  const subscription = getQoderSubscriptionInfo(account);
+
+  // 1. 基础体验包
+  const rawAccountQuota = webPayload?.account_quota;
+  const rawPlanQuota = webPayload?.plan_quota;
+  const baseTotal = firstFiniteNumber(
+    rawPlanQuota?.quota_summary?.limit_value,
+    rawAccountQuota?.limit_value,
+    subscription.userQuota.total,
+  ) ?? 0;
+  const baseUsed = firstFiniteNumber(
+    rawPlanQuota?.quota_summary?.used_value,
+    rawAccountQuota?.used_value,
+    subscription.userQuota.used,
+  ) ?? 0;
+  const baseRemain = Math.max(0, baseTotal - baseUsed);
+  const baseUsedPercent = baseTotal > 0 ? Math.max(0, Math.min(100, (baseUsed / baseTotal) * 100)) : 0;
+  const baseRemainPercent = baseTotal > 0 ? Math.max(0, Math.min(100, (baseRemain / baseTotal) * 100)) : null;
+  const baseResetTime = normalizeTimestampMs(
+    firstFiniteNumber(
+      webPayload?.nextResetAt,
+      rawAccountQuota?.reset_time,
+      subscription.expiresAt,
+    ),
+  ) ?? null;
+
+  const baseItem: OfficialQuotaResource = {
+    packageCode: 'base',
+    packageName: t('codebuddy.quotaCategory.base', '基础体验包'),
+    cycleStartTime: null,
+    cycleEndTime: null,
+    deductionEndTime: null,
+    expiredTime: null,
+    total: baseTotal,
+    remain: baseRemain,
+    used: baseUsed,
+    usedPercent: baseUsedPercent,
+    remainPercent: baseRemainPercent,
+    refreshAt: baseResetTime,
+    expireAt: null,
+    isBasePackage: true,
+    unlimited: false,
+  };
+  const baseItems: OfficialQuotaResource[] = [baseItem];
+
+  // 2. 活动赠送包
+  const rawPackageQuota = webPayload?.resource_package_quota;
+  // 官方 App 用量接口也提供积分包明细，不要求账号已有网页 Cookie。
+  const usageRaw = isRecord(account.auth_credit_usage_raw) ? account.auth_credit_usage_raw : null;
+  const usage = isRecord(usageRaw?.qoderUsage) ? usageRaw.qoderUsage : usageRaw;
+  const dedicatedPackages = usage?.dedicatedResourcePackages ?? usage?.dedicated_resource_packages;
+  const nativeDetails: QoderWebQuotaDetailItem[] = Array.isArray(dedicatedPackages)
+    ? dedicatedPackages.filter(isRecord).flatMap((pkg) => {
+        const id = toNonEmptyString(pkg.id);
+        const total = toFiniteNumber(pkg.total);
+        const used = toFiniteNumber(pkg.used) ?? 0;
+        if (!id || total == null || total <= 0 || used < 0) return [];
+        return [{
+          id,
+          name: toNonEmptyString(pkg.name) ?? undefined,
+          limit_value: total,
+          used_value: used,
+          expires_at: firstFiniteNumber(pkg.expiresAt, pkg.expires_at) ?? undefined,
+        }];
+      })
+    : [];
+  const rawDetails = Array.isArray(rawPackageQuota?.quota_detail) ? rawPackageQuota.quota_detail : [];
+  const activityItems: OfficialQuotaResource[] = [];
+  let activitySummary: { total: number; used: number } | null = null;
+  const hasCompleteDetails = rawDetails.length > 0 && rawDetails.every((pkg) =>
+    isRecord(pkg) && toFiniteNumber(pkg.limit_value) != null && toFiniteNumber(pkg.used_value) != null,
+  );
+
+  const resourcesFromDetails = (details: QoderWebQuotaDetailItem[]): OfficialQuotaResource[] =>
+    details.map<OfficialQuotaResource>((pkg) => {
+      const pkgTotal = toFiniteNumber(pkg.limit_value)!;
+      const pkgUsed = toFiniteNumber(pkg.used_value)!;
+      const pkgRemain = Math.max(0, pkgTotal - pkgUsed);
+      const pkgUsedPercent = pkgTotal > 0 ? Math.max(0, Math.min(100, (pkgUsed / pkgTotal) * 100)) : 0;
+      const pkgRemainPercent = pkgTotal > 0 ? Math.max(0, Math.min(100, (pkgRemain / pkgTotal) * 100)) : null;
+      const pkgExpireAt = normalizeTimestampMs(pkg.expires_at);
+      const pkgEffectiveAt = normalizeTimestampMs(pkg.effective_at);
+      const pkgName =
+        toNonEmptyString(pkg.package_name) ||
+        toNonEmptyString(pkg.name) ||
+        t('common.shared.columns.creditPackage', '附加 Credits');
+
+      return {
+        packageCode: 'activity',
+        packageName: pkgName,
+        cycleStartTime: pkgEffectiveAt != null ? String(pkgEffectiveAt) : null,
+        cycleEndTime: null,
+        deductionEndTime: null,
+        expiredTime: null,
+        total: pkgTotal,
+        remain: pkgRemain,
+        used: pkgUsed,
+        usedPercent: pkgUsedPercent,
+        remainPercent: pkgRemainPercent,
+        refreshAt: null,
+        expireAt: pkgExpireAt,
+        isBasePackage: false,
+        unlimited: false,
+      };
+    });
+
+  if (hasCompleteDetails) {
+    activityItems.push(...resourcesFromDetails(rawDetails));
+  } else {
+    // 只有汇总额度时只展示汇总，不能据此推断礼包数量、领取日或到期日。
+    const actTotal = firstFiniteNumber(
+      rawPackageQuota?.quota_summary?.limit_value,
+      rawPackageQuota?.limit_value,
+      subscription.addOnQuota.total,
+    ) ?? 0;
+    const actUsed = firstFiniteNumber(
+      rawPackageQuota?.quota_summary?.used_value,
+      rawPackageQuota?.used_value,
+      subscription.addOnQuota.used,
+    ) ?? 0;
+
+    activitySummary = { total: actTotal, used: actUsed };
+  }
+
+  // 按到期时间由近及远排序
+  activityItems.sort((a, b) => {
+    if (a.expireAt == null && b.expireAt == null) return 0;
+    if (a.expireAt == null) return 1;
+    if (b.expireAt == null) return -1;
+    return a.expireAt - b.expireAt;
+  });
+
+  const aggregate = (
+    items: OfficialQuotaResource[],
+    summary?: { total: number; used: number } | null,
+  ): Omit<QuotaCategoryGroup, 'key' | 'label' | 'items' | 'visible'> => {
+    const unlimited = items.some((item) => item.unlimited);
+    const total = summary?.total ?? items.reduce((sum, r) => sum + r.total, 0);
+    const used = summary?.used ?? items.reduce((sum, r) => sum + r.used, 0);
+    const remain = summary ? Math.max(0, total - used) : items.reduce((sum, r) => sum + r.remain, 0);
+    const usedPercent = unlimited ? 0 : total > 0 ? Math.max(0, Math.min(100, (used / total) * 100)) : 0;
+    const remainPercent = unlimited ? null : total > 0 ? Math.max(0, Math.min(100, (remain / total) * 100)) : null;
+    const quotaClass =
+      remainPercent != null ? (remainPercent <= 10 ? 'critical' : remainPercent <= 30 ? 'low' : remainPercent <= 60 ? 'medium' : 'high') : 'high';
+    return {
+      total: unlimited ? -1 : total,
+      remain: unlimited ? -1 : remain,
+      used: unlimited ? 0 : used,
+      usedPercent,
+      remainPercent,
+      quotaClass,
+      unlimited,
+    };
+  };
+
+  const baseAgg = aggregate(baseItems);
+  const activityAgg = aggregate(activityItems, activitySummary);
+
+  const groups: QuotaCategoryGroup[] = [
+    {
+      key: 'base',
+      label: t('codebuddy.quotaCategory.base', '基础体验包'),
+      ...baseAgg,
+      items: baseItems,
+      visible: true,
+    },
+    {
+      key: 'activity',
+      label: t('common.shared.columns.creditPackage', '附加 Credits'),
+      ...activityAgg,
+      items: activityItems,
+      visible: activityAgg.total > 0 || activityItems.length > 0,
+    },
+  ];
+
+  // The official App treats dedicated packages separately from addOnQuota.
+  // Combining them would drop purchased/add-on credits or count them twice.
+  if (nativeDetails.length > 0) {
+    const dedicatedItems = resourcesFromDetails(nativeDetails);
+    dedicatedItems.sort((a, b) => (a.expireAt ?? Infinity) - (b.expireAt ?? Infinity));
+    groups.push({
+      key: 'extra',
+      label: t('qoder.quota.dedicatedPackages', '专属积分包'),
+      ...aggregate(dedicatedItems),
+      items: dedicatedItems,
+      visible: true,
+    });
+  }
+
+  if (subscription.sharedCreditPackageUsed != null) {
+    groups.push({
+      key: 'other',
+      label: t('common.shared.columns.sharedCreditPackage', 'Shared Credit Package'),
+      used: subscription.sharedCreditPackageUsed,
+      total: 0,
+      remain: 0,
+      usedPercent: 0,
+      remainPercent: null,
+      quotaClass: 'high',
+      items: [],
+      visible: true,
+      usageOnly: true,
+    });
+  }
+  return groups;
 }
 
 // ---------------------------------------------------------------------------
@@ -463,11 +763,7 @@ export const QODER_VARIANT_IDS: readonly QoderVariantId[] = [
   'qoder_cn_app',
 ];
 
-/**
- * 支持应用多开的 Qoder 变体：仅 IDE 系。
- * App 系（qoder_app / qoder_cn_app）客户端受官方单实例机制限制，
- * `--user-data-dir` 与 e2e 旁路均被客户端显式封禁，无法同时运行多个登录态。
- */
+/** 支持应用多开的 Qoder 变体：仅 IDE 系。 */
 export type QoderInstanceVariantId = Extract<QoderVariantId, 'qoder' | 'qoder_cn_ide'>;
 
 export const QODER_INSTANCE_VARIANT_IDS: readonly QoderInstanceVariantId[] = [

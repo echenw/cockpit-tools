@@ -226,6 +226,7 @@ fn run(app: AppHandle, id: String, kind: QoderVariantKind, dir: PathBuf) {
         // An unconfirmed launcher may still create its child. Keep the marker for a later sweep.
         Some("临时客户端启动未确认，目录已保留，将由清理巡检关闭实例后清理".to_string())
     } else { cleanup(kind, &dir).err() };
+    let imported_id = outcome.as_ref().ok().and_then(|account_id| account_id.clone());
     let mut records = sessions();
     let mut imported = false;
     if let Some(session) = records.get_mut(&id) {
@@ -242,6 +243,9 @@ fn run(app: AppHandle, id: String, kind: QoderVariantKind, dir: PathBuf) {
         session.finished_at = Some(Instant::now());
     }
     drop(records);
+    if let Some(account_id) = imported_id {
+        crate::modules::qoder_webview::sync_after_login(app.clone(), account_id);
+    }
     if imported || kind.is_app() {
         // No credentials in events. Consumers reload the authoritative account list.
         let _ = app.emit("accounts:changed", serde_json::json!({

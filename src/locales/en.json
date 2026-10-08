@@ -145,6 +145,7 @@
     },
     "confirm": "Confirm",
     "cancel": "Cancel",
+    "stop": "Stop",
     "cancelling": "Cancelling...",
     "cancelled": "Cancelled",
     "save": "Save",
@@ -6688,6 +6689,22 @@
     }
   },
   "qoder": {
+    "webSync": {
+      "title": "Credit package details and expiration dates are temporarily unavailable",
+      "description": "Account authorization succeeded, but website data could not be retrieved. Individual credit package details and expiration dates are unavailable.",
+      "dontShowAgain": "Don't show again",
+      "reason": "View reason",
+      "macTitle": "Enable access on macOS",
+      "macSteps": {
+        "settings": "Open System Settings → Privacy & Security → Full Disk Access.",
+        "application": "Click +, add the Cockpit app you are running, and enable its switch.",
+        "development": "For development builds launched by a terminal or IDE, macOS may attribute access to that launcher. Enable access for the corresponding terminal or IDE if needed. This grants access to other apps' data, so authorize only software you trust.",
+        "retry": "Quit and reopen the authorized app and Cockpit. Keep the matching account signed in to Chrome, then retry with the globe button on its account card. Allow Chrome key access if Keychain prompts you."
+      }
+    },
+    "quota": {
+      "dedicatedPackages": "Dedicated Credit Packages"
+    },
     "officialLogin": {
       "tab": "Official client login",
       "desc": "The official client generates the authorization URL and completes sign-in. Cockpit imports the account after the client saves its credentials.",
@@ -6764,6 +6781,44 @@
     },
     "empty": {
       "desc": "Click \"Add Account\" to use auth login, local import, or JSON import."
+    },
+    "claimReward": {
+      "buttonTitle": "Claim daily 100 credits",
+      "batchTitle": "Batch claim daily 100 credits",
+      "modalTitle": "Claim Daily 100 Credits",
+      "modalDesc": "Batch claim the daily 100 credits campaign reward for selected accounts.",
+      "selectAll": "Select All",
+      "selectedCount": "{{selected}} of {{total}} accounts selected",
+      "claiming": "Claiming...",
+      "statusPending": "Pending",
+      "statusAlreadyClaimed": "Already claimed today",
+      "statusFailed": "Failed",
+      "batchFinishedSummary": "Finished: {{success}} succeeded, {{already}} already claimed, {{failed}} failed",
+      "reclaim": "Claim Again",
+      "startClaim": "Claim All",
+      "claimSuccess": "Account {{email}} successfully claimed {{amount}} credits!",
+      "alreadyClaimed": "Account {{email}} has already claimed credits today",
+      "claimFailed": "Failed to claim credits for {{email}}: {{error}}",
+      "badgeClaimable": "100 Available",
+      "badgeClaimed": "100 Claimed",
+      "statusClaimableTip": "Daily 100 credits available today",
+      "statusClaimedTip": "Daily 100 credits already claimed today",
+      "statusNone": "No Campaign",
+      "badgeNone": "No Campaign",
+      "statusNoneTip": "No active campaign for this account",
+      "alreadyClaimedTip": "Daily 100 credits already claimed today",
+      "scheduleTitle": "Check-in settings",
+      "loadingSettings": "Loading check-in settings...",
+      "autoEnabled": "Automatic daily check-in",
+      "dailyTime": "Daily time (local time)",
+      "requestInterval": "Delay between accounts (seconds)",
+      "runningRequired": "Keep Cockpit running. Closing this dialog does not stop automatic check-in. If the time is missed, starting Cockpit later that day will catch up.",
+      "intervalHint": "Wait after each account request completes before processing the next. Manual and automatic check-in share this delay. Each account is attempted automatically once per day; failures can be retried manually.",
+      "selectionHint": "Save the checked accounts for automatic check-in. Existing selections outside this region or filter are kept. Claiming now also saves these settings.",
+      "saveSettings": "Save settings",
+      "invalidSettings": "Choose a valid time and an integer delay from 0 to 300 seconds.",
+      "scheduleSaved": "Saved: check in {{count}} accounts daily at {{time}}, with a {{seconds}}-second delay.",
+      "scheduleDisabled": "Delay saved. Automatic check-in is disabled."
     }
   },
   "zcode": {

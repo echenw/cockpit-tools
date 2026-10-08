@@ -36,8 +36,10 @@ test('Qoder client navigation shares account and current-state projections', asy
   let switchError: Error | null = null;
   let listCalls = 0;
   let currentCalls = 0;
+  let rewardCalls = 0;
   const firstList = deferred<QoderAccount[]>();
   let listResponse: () => Promise<QoderAccount[]> = () => firstList.promise;
+  let rewardResponse: () => Promise<QoderAccount[]> = async () => [];
   let currentResponse: (platform: string) => Promise<string | null> = async (platform) =>
     platform.startsWith('qoder_cn_') ? 'cn' : 'intl';
   mockIPC((command, args) => {
@@ -66,9 +68,10 @@ test('Qoder client navigation shares account and current-state projections', asy
       assert.ok(args && 'platform' in args);
       return currentResponse(String(args.platform));
     }
+    if (command === 'batch_check_qoder_reward_statuses') { rewardCalls++; return rewardResponse(); }
     throw new Error(`Unexpected IPC in isolated test: ${command}`);
   });
-  const { ensureQoderAccountsLoaded, useQoderAccountStore } =
+  const { ensureQoderAccountsLoaded, checkUnknownQoderRewardStatuses, useQoderAccountStore } =
     await import('./useQoderAccountStore.ts');
   const { useQoderCurrentAccountStore, refreshQoderCurrentAccountIds } =
     await import('./useQoderCurrentAccountStore.ts');
@@ -86,6 +89,16 @@ test('Qoder client navigation shares account and current-state projections', asy
     assert.equal(listCalls, 1);
     assert.equal(currentCalls, 4);
     assert.equal(useQoderCurrentAccountStore.getState().currentIds.qoder_app, 'intl');
+  });
+
+  await t.test('returning to the same unknown reward snapshot does not repeat network queries', async () => {
+    await checkUnknownQoderRewardStatuses(accounts);
+    await checkUnknownQoderRewardStatuses(accounts.map((account) => ({ ...account })));
+    assert.equal(rewardCalls, 1);
+    await checkUnknownQoderRewardStatuses([{ ...accounts[0], reward_window_end_at: 1 }]);
+    assert.equal(rewardCalls, 2, 'a changed status snapshot can be checked again');
+    await checkUnknownQoderRewardStatuses([{ ...accounts[0], reward_window_end_at: 1, reward_status_updated_at: 2 }]);
+    assert.equal(rewardCalls, 2, 'a newer query timestamp for the same expired window must not create a query loop');
   });
 
   await t.test('explicit reload still queries current state, accepts logout and rejects cross-region IDs', async () => {
@@ -165,6 +178,74 @@ test('Qoder client navigation shares account and current-state projections', asy
       assert.deepEqual(switchEvents.slice(firstEvent), [{ platformId: 'qoder', accountId: 'intl' }]);
     } finally {
       listResponse = previousResponse;
+    }
+  });
+
+  await t.test('successful expired reward responses retry after completion cooldown and stop once resolved', async () => {
+    const previousNow = Date.now;
+    const previousListResponse = listResponse;
+    const previousRewardResponse = rewardResponse;
+    const previousState = useQoderAccountStore.getState();
+    const previousCurrentIds = useQoderCurrentAccountStore.getState().currentIds;
+    let now = Date.UTC(2026, 9, 9, 12);
+    let serverAccount: QoderAccount = {
+      id: 'expired-reward-fixture', variant: 'qoder', email: '', created_at: 1, last_used: 1,
+      reward_claim_status: 'CLAIMED', reward_window_end_at: now - 1_000,
+      reward_status_updated_at: Math.floor(now / 1_000),
+    };
+    const firstResponse = deferred<QoderAccount[]>();
+    const initialCalls = rewardCalls;
+    let first: Promise<void> | undefined;
+    Date.now = () => now;
+    listResponse = async () => [serverAccount];
+    rewardResponse = () => firstResponse.promise;
+    useQoderAccountStore.setState({ accounts: [serverAccount] });
+    try {
+      first = checkUnknownQoderRewardStatuses(useQoderAccountStore.getState().accounts);
+      assert.equal(rewardCalls, initialCalls + 1);
+      now += 60_000;
+      await checkUnknownQoderRewardStatuses([{ ...serverAccount, reward_status_updated_at: 2 }]);
+      assert.equal(rewardCalls, initialCalls + 1, 'an in-flight query must remain deduplicated even after a minute');
+      serverAccount = { ...serverAccount, reward_status_updated_at: Math.floor(now / 1_000) };
+      firstResponse.resolve([serverAccount]);
+      await first;
+      rewardResponse = async () => {
+        serverAccount = { ...serverAccount, reward_status_updated_at: Math.floor(now / 1_000) };
+        return [serverAccount];
+      };
+
+      await checkUnknownQoderRewardStatuses(useQoderAccountStore.getState().accounts);
+      now += 59_999;
+      await checkUnknownQoderRewardStatuses(useQoderAccountStore.getState().accounts);
+      assert.equal(rewardCalls, initialCalls + 1, 'successful expired data must wait a full minute after completion');
+      now += 1;
+      await checkUnknownQoderRewardStatuses(useQoderAccountStore.getState().accounts);
+      assert.equal(rewardCalls, initialCalls + 2, 'a successful response with the same expired window must not suppress future retries');
+      await checkUnknownQoderRewardStatuses(useQoderAccountStore.getState().accounts);
+      assert.equal(rewardCalls, initialCalls + 2, 'a newer query timestamp must not bypass the cooldown');
+
+      now += 60_000;
+      serverAccount = {
+        ...serverAccount, reward_claim_status: 'CLAIMABLE', reward_window_end_at: now + 86_400_000,
+      };
+      await checkUnknownQoderRewardStatuses(useQoderAccountStore.getState().accounts);
+      assert.equal(rewardCalls, initialCalls + 3);
+      assert.equal(useQoderAccountStore.getState().accounts[0].reward_claim_status, 'CLAIMABLE');
+      assert.equal(useQoderAccountStore.getState().accounts[0].reward_window_end_at, serverAccount.reward_window_end_at);
+      now += 60_000;
+      await checkUnknownQoderRewardStatuses(useQoderAccountStore.getState().accounts);
+      assert.equal(rewardCalls, initialCalls + 3, 'a resolved, unexpired activity must stop retries');
+    } finally {
+      firstResponse.resolve([serverAccount]);
+      try {
+        if (first) await first;
+      } finally {
+        Date.now = previousNow;
+        listResponse = previousListResponse;
+        rewardResponse = previousRewardResponse;
+        useQoderAccountStore.setState(previousState);
+        useQoderCurrentAccountStore.setState({ currentIds: previousCurrentIds });
+      }
     }
   });
 });

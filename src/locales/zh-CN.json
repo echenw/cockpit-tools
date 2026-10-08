@@ -145,6 +145,7 @@
     },
     "confirm": "确认",
     "cancel": "取消",
+    "stop": "停止",
     "cancelling": "正在取消...",
     "cancelled": "已取消",
     "save": "保存",
@@ -6688,6 +6689,22 @@
     }
   },
   "qoder": {
+    "webSync": {
+      "title": "积分包明细与到期时间暂未获取",
+      "description": "账号授权成功，但网页数据获取失败，无法查询具体积分包及到期时间",
+      "dontShowAgain": "不再提示",
+      "reason": "查看原因",
+      "macTitle": "macOS 开启方法",
+      "macSteps": {
+        "settings": "打开“系统设置 → 隐私与安全性 → 完全磁盘访问权限”。",
+        "application": "点击“＋”，添加当前运行的 Cockpit，并开启开关。",
+        "development": "开发版由终端或 IDE 启动时，macOS 可能把权限归到启动它的软件，需要给对应终端或 IDE 开启。该权限覆盖其他应用数据，请只授权你信任的软件。",
+        "retry": "完全退出并重新打开获授权的软件和 Cockpit；保持 Chrome 登录对应账号，再点击账号卡片的地球按钮重试。若出现 Chrome 密钥的钥匙串提示，请允许读取。"
+      }
+    },
+    "quota": {
+      "dedicatedPackages": "专属积分包"
+    },
     "officialLogin": {
       "tab": "官方客户端登录",
       "desc": "由官方客户端生成授权地址并完成登录，Cockpit 在凭据落盘后自动导入账号。",
@@ -6764,6 +6781,44 @@
     },
     "empty": {
       "desc": "点击“添加账号”，可使用授权登录、本机导入或 JSON 导入。"
+    },
+    "claimReward": {
+      "buttonTitle": "领取每日 100 积分",
+      "batchTitle": "一键领取每日 100 积分",
+      "modalTitle": "一键领取每日 100 积分",
+      "modalDesc": "批量为选中的账号领取每日活动 100 积分奖励。",
+      "selectAll": "全选",
+      "selectedCount": "已选 {{selected}} / {{total}} 个账号",
+      "claiming": "领取中...",
+      "statusPending": "待领取",
+      "statusAlreadyClaimed": "今日已领",
+      "statusFailed": "失败",
+      "batchFinishedSummary": "完成：{{success}} 成功，{{already}} 已领，{{failed}} 失败",
+      "reclaim": "重新领取",
+      "startClaim": "一键领取",
+      "claimSuccess": "账号 {{email}} 成功领取 {{amount}} 积分！",
+      "alreadyClaimed": "账号 {{email}} 今日已领取过积分",
+      "claimFailed": "账号 {{email}} 领取积分失败：{{error}}",
+      "badgeClaimable": "可领100",
+      "badgeClaimed": "已领100",
+      "statusClaimableTip": "今日可领 100 积分",
+      "statusClaimedTip": "今日已领取 100 积分",
+      "statusNone": "无活动",
+      "badgeNone": "无活动",
+      "statusNoneTip": "账号暂无活动/不可领取",
+      "alreadyClaimedTip": "今日已领取 100 积分",
+      "scheduleTitle": "签到设置",
+      "loadingSettings": "正在读取签到设置...",
+      "autoEnabled": "每天自动签到",
+      "dailyTime": "每日签到时间（本机时间）",
+      "requestInterval": "账号请求间隔（秒）",
+      "runningRequired": "需保持 Cockpit 运行；关闭此弹窗不影响自动签到。错过时间后，当天再次启动会补执行。",
+      "intervalHint": "上一个账号请求结束后，再等待设定秒数处理下一个；手动和自动签到共用。每天每个账号自动尝试一次，失败可手动重试。",
+      "selectionHint": "保存当前勾选账号用于自动签到，保留其他地区及筛选外的已选账号。一键领取也会保存设置。",
+      "saveSettings": "保存设置",
+      "invalidSettings": "请选择有效时间，间隔须为 0–300 的整数秒。",
+      "scheduleSaved": "已保存：每天 {{time}} 为 {{count}} 个账号自动签到，间隔 {{seconds}} 秒。",
+      "scheduleDisabled": "已保存请求间隔，自动签到已关闭。"
     }
   },
   "zcode": {

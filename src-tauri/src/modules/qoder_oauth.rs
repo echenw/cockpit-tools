@@ -12,18 +12,20 @@ use std::time::{Duration, Instant};
 use url::Url;
 use uuid::Uuid;
 
-use crate::models::qoder::{QoderAccount, QoderOAuthStartResponse};
+use crate::models::qoder::{QoderAccount, QoderClaimRewardResult, QoderOAuthStartResponse};
 use crate::modules::qoder_variant::QoderVariantKind;
 use crate::modules::{config, logger, qoder_account, qoder_instance, qoder_platform_paths};
 
 const OAUTH_TIMEOUT_SECONDS: i64 = 600;
 const OAUTH_POLL_INTERVAL_MS: u64 = 1000;
+
 // device/job 刷新共享账号锁，从读取凭证到落库串行执行；不同账号仍可并行。
 // Weak 仅保留正在执行或排队的锁，避免长期积累已删除账号。
 static ACCOUNT_REFRESH_LOCKS: std::sync::LazyLock<
     Mutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>,
 > = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// 用量与凭证刷新共享账号锁，避免较早的网页查询覆盖后续刷新结果。
 pub(crate) fn account_refresh_lock(account_id: &str) -> Result<Arc<tokio::sync::Mutex<()>>, String> {
     let canonical_key = qoder_account::load_account(account_id).and_then(|account| {
         let kind = qoder_account::account_variant_kind(&account).ok()?;
@@ -1805,6 +1807,22 @@ async fn refresh_app_owned_usage(
     result
 }
 
+/// Read-only credential use for post-login quota hydration. This never exchanges
+/// an RT or injects client credentials; App session ownership and lock order match refresh.
+pub(crate) async fn refresh_account_usage_only(account_id: &str) -> Result<QoderAccount, String> {
+    let initial = qoder_account::load_account(account_id).ok_or("Qoder 账号不存在")?;
+    let kind = qoder_account::account_variant_kind(&initial)?;
+    let _app_guard = if kind.is_app() {
+        Some(client_session_lock(kind)?.lock_owned().await)
+    } else { None };
+    let _account_guard = account_refresh_lock(account_id)?.lock_owned().await;
+    let saved = qoder_account::load_account(account_id).ok_or("Qoder 账号不存在")?;
+    let target = qoder_account::account_for_variant(&saved, kind)?;
+    let params = resolve_qoder_variant_params(kind.provider_key())?;
+    let session = if kind.is_app() { qoder_account::app_owned_session(&target)?.unwrap_or(target) } else { target };
+    refresh_app_owned_usage(&session, &params).await
+}
+
 async fn fetch_openapi_json(
     client: &reqwest::Client,
     openapi_base_url: &str,
@@ -1994,12 +2012,9 @@ async fn fetch_user_plan_for_refresh(
 }
 
 fn sash_usage_numeric_field(node: &Value, bucket: &str, field: &str) -> Result<(), String> {
-    let present = node.get(field).is_some_and(|value| {
-        value.is_number()
-            || value
-                .as_str()
-                .is_some_and(|text| text.trim().parse::<f64>().is_ok())
-    });
+    let present = node.get(field).and_then(|value| value.as_f64().or_else(|| {
+        value.as_str().and_then(|text| text.trim().parse::<f64>().ok())
+    })).is_some_and(|number| number.is_finite() && number >= 0.0);
     if present {
         Ok(())
     } else {
@@ -2018,15 +2033,15 @@ fn validate_sash_usage_schema(body: &Value) -> Result<(), String> {
         let node = usage
             .get(bucket)
             .ok_or_else(|| format!("Qoder sash 用量缺少 qoderUsage.{}，无法采用主路", bucket))?;
-        for field in ["total", "used", "remaining"] {
+        for field in ["total", "used"] {
             sash_usage_numeric_field(node, bucket, field)?;
         }
+        if node.get("remaining").is_some() { sash_usage_numeric_field(node, bucket, "remaining")?; }
     }
-    if usage.get("isQuotaExceeded").is_none() {
-        return Err("Qoder sash 用量缺少 qoderUsage.isQuotaExceeded，无法采用主路".to_string());
-    }
-    if usage.get("expiresAt").is_none() {
-        return Err("Qoder sash 用量缺少 qoderUsage.expiresAt，无法采用主路".to_string());
+    // App 0.4.3's consumer derives remaining and does not require these legacy
+    // summary fields. Rejecting their absence discards dedicatedResourcePackages.
+    if usage.get("dedicatedResourcePackages").is_some_and(|packages| !packages.is_array()) {
+        return Err("Qoder 积分包明细不是数组".to_string());
     }
     Ok(())
 }
@@ -2799,6 +2814,349 @@ pub fn cancel_login_for_variant(
     Ok(())
 }
 
+fn build_qoder_claim_headers(
+    kind: QoderVariantKind,
+    openapi_base_url: &str,
+    token: &str,
+    machine_info: Option<&QoderMachineInfo>,
+) -> reqwest::header::HeaderMap {
+    use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
+
+    let mut headers = HeaderMap::new();
+    let bearer = format!("Bearer {}", token);
+    if let Ok(value) = HeaderValue::from_str(&bearer) {
+        headers.insert(AUTHORIZATION, value);
+    }
+    if let Ok(value) = HeaderValue::from_str("application/json") {
+        headers.insert(ACCEPT, value);
+    }
+    if let Ok(value) = HeaderValue::from_str("10") {
+        headers.insert(reqwest::header::HeaderName::from_static("cosy-clienttype"), value);
+    }
+
+    let cosy_version = machine_info
+        .and_then(|v| v.cosy_version.clone())
+        .or_else(|| detect_qoder_product_version_for_variant(kind))
+        .unwrap_or_else(|| "0.4.2".to_string());
+    if let Ok(value) = HeaderValue::from_str(&cosy_version) {
+        headers.insert(reqwest::header::HeaderName::from_static("cosy-version"), value);
+    }
+
+    let machine_os = machine_info
+        .and_then(|v| v.machine_os.as_deref())
+        .and_then(|v| normalize_non_empty(Some(v)))
+        .unwrap_or_else(build_cosy_machine_os);
+    if let Ok(value) = HeaderValue::from_str(&machine_os) {
+        headers.insert(reqwest::header::HeaderName::from_static("cosy-machineos"), value);
+    }
+
+    if let Some(m) = machine_info {
+        if let Some(h) = m.machine_hostname.as_deref().and_then(|v| normalize_non_empty(Some(v))) {
+            if let Ok(v) = HeaderValue::from_str(&h) {
+                headers.insert(reqwest::header::HeaderName::from_static("cosy-machinehostname"), v);
+            }
+        }
+        if let Some(id) = m.machine_id.as_deref().and_then(|v| normalize_non_empty(Some(v))) {
+            if let Ok(v) = HeaderValue::from_str(&id) {
+                headers.insert(reqwest::header::HeaderName::from_static("cosy-machineid"), v);
+            }
+        }
+        if let Some(tok) = normalize_non_empty(Some(m.token.as_str())) {
+            if let Ok(v) = HeaderValue::from_str(&tok) {
+                headers.insert(reqwest::header::HeaderName::from_static("cosy-machinetoken"), v);
+            }
+        }
+        if let Some(code) = m.machine_code.as_deref().and_then(|v| normalize_non_empty(Some(v))) {
+            if let Ok(v) = HeaderValue::from_str(&code) {
+                headers.insert(reqwest::header::HeaderName::from_static("cosy-machinecode"), v);
+            }
+        }
+        if let Some(t) = m.machine_type.as_deref().and_then(|v| normalize_non_empty(Some(v))) {
+            if let Ok(v) = HeaderValue::from_str(&t) {
+                headers.insert(reqwest::header::HeaderName::from_static("cosy-machinetype"), v);
+            }
+        }
+    }
+
+    if let Ok(url) = Url::parse(openapi_base_url) {
+        if let Some(host) = url.host_str() {
+            let iframe_url = format!("https://{}/growth-page/activity-iframe", host);
+            if let Ok(v) = HeaderValue::from_str(&iframe_url) {
+                headers.insert(reqwest::header::HeaderName::from_static("origin"), v.clone());
+                headers.insert(reqwest::header::HeaderName::from_static("referer"), v);
+            }
+        }
+    }
+
+    if let Ok(value) = HeaderValue::from_str(
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    ) {
+        headers.insert(USER_AGENT, value);
+    }
+
+    headers
+}
+
+fn select_unique_100_campaign(campaigns: &[Value]) -> Result<Option<&Value>, String> {
+    let mut matches = campaigns.iter().filter(|campaign| {
+        campaign.get("benefit").and_then(|benefit| benefit.get("amount"))
+            .and_then(Value::as_i64) == Some(100)
+            && campaign.get("campaignId").and_then(Value::as_str)
+                .is_some_and(|id| !id.trim().is_empty())
+            && campaign.get("actionType").and_then(Value::as_str) != Some("VIEW_DETAILS")
+    });
+    let selected = matches.next();
+    if matches.next().is_some() {
+        return Err("当前账号存在多个 100 积分活动，无法确定每日领取目标".to_string());
+    }
+    Ok(selected)
+}
+
+pub async fn claim_daily_reward(account_id: &str) -> Result<QoderClaimRewardResult, String> {
+    let target = qoder_account::load_account(account_id)
+        .ok_or_else(|| format!("Qoder 账号不存在: {}", account_id))?;
+    let kind = qoder_account::account_variant_kind(&target)?;
+    let variant_key = kind.provider_key();
+    let params = resolve_qoder_variant_params(variant_key)
+        .map_err(|err| format!("解析 Qoder 变体参数失败: {}", err))?;
+
+    // 当前 App 只查询额度，离线账号才可轮换；共同入口负责会话归属与切号互斥。
+    let target = if variant_supports_device_refresh(variant_key) {
+        refresh_account_token_for_variant(variant_key, account_id, false).await?
+    } else {
+        target
+    };
+    let target = qoder_account::app_owned_session(&target)?.unwrap_or(target);
+    let access_token = extract_access_token_from_account(&target)
+        .ok_or_else(|| "Qoder 账号缺少可用凭证，请重新登录".to_string())?;
+
+    let client = build_reqwest_client()?;
+    let machine_info = read_qoder_machine_info_cache_for_variant(&params).ok().flatten();
+    let headers = build_qoder_claim_headers(kind, params.openapi_base_url, &access_token, machine_info.as_ref());
+
+    let campaigns_url = format!("{}/sash/api/v1/me/campaigns", params.openapi_base_url.trim_end_matches('/'));
+    let campaigns_resp = client
+        .get(&campaigns_url)
+        .headers(headers.clone())
+        .send()
+        .await
+        .map_err(|err| format!("获取 Qoder 活动列表网络错误: {}", err))?;
+
+    let status = campaigns_resp.status();
+    if !status.is_success() {
+        return Err(format!("获取活动列表失败 (HTTP {})", status));
+    }
+
+    let campaigns_json: Value = campaigns_resp
+        .json()
+        .await
+        .map_err(|err| format!("解析 Qoder 活动列表失败: {}", err))?;
+
+    let campaigns_arr = campaigns_json
+        .get("campaigns")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "Qoder 活动列表为空".to_string())?;
+
+    let target_campaign = select_unique_100_campaign(campaigns_arr)?
+        .ok_or_else(|| "当前账号活动列表中无可确认的 100 积分领取活动".to_string())?;
+
+    let benefit_amount = target_campaign
+        .get("benefit")
+        .and_then(|b| b.get("amount"))
+        .and_then(|a| a.as_i64())
+        .ok_or_else(|| "Qoder 活动缺少可确认的积分数量".to_string())?;
+
+    let claim_status_val = target_campaign.get("claimStatus").and_then(|v| v.as_str());
+    if claim_status_val == Some("CLAIMED") {
+        let saved = qoder_account::update_reward_status(
+            account_id,
+            Some("CLAIMED".to_string()),
+            target_campaign.get("endAt").and_then(|v| v.as_i64()),
+            None,
+        )?;
+        return Ok(QoderClaimRewardResult {
+            account_id: account_id.to_string(),
+            success: true,
+            replayed: true,
+            amount: Some(benefit_amount),
+            message: format!("今日已领取过 {} 积分", benefit_amount),
+            account: Some(saved),
+        });
+    }
+
+    let campaign_id = target_campaign
+        .get("campaignId")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "Qoder 活动缺少 campaignId".to_string())?;
+
+    let claim_url = format!(
+        "{}/sash/api/v1/me/campaigns/{}/claim",
+        params.openapi_base_url.trim_end_matches('/'),
+        campaign_id
+    );
+
+    let claim_resp = client
+        .post(&claim_url)
+        .headers(headers)
+        .header(reqwest::header::CONTENT_LENGTH, 0)
+        .send()
+        .await
+        .map_err(|err| format!("领取 Qoder 积分网络请求错误: {}", err))?;
+
+    let claim_status = claim_resp.status();
+    if !claim_status.is_success() {
+        let err_body = claim_resp.text().await.unwrap_or_default();
+        let parsed_err = serde_json::from_str::<Value>(&err_body).ok();
+        let error_msg = parsed_err.as_ref().and_then(|v| {
+            let msg = v.get("errorMessage").or_else(|| v.get("message")).and_then(|m| m.as_str());
+            let code = v.get("errorCode").or_else(|| v.get("code")).and_then(|c| c.as_str());
+            match (code, msg) {
+                (Some(c), Some(m)) => Some(format!("{}: {}", c, m)),
+                (None, Some(m)) => Some(m.to_string()),
+                (Some(c), None) => Some(c.to_string()),
+                (None, None) => None,
+            }
+        });
+        let detail = error_msg.unwrap_or_else(|| {
+            if err_body.trim().is_empty() {
+                format!("HTTP {}", claim_status)
+            } else {
+                err_body
+            }
+        });
+        return Err(format!("领取失败 (HTTP {}): {}", claim_status, detail));
+    }
+
+    let claim_json: Value = claim_resp
+        .json()
+        .await
+        .map_err(|err| format!("解析 Qoder 领取结果失败: {}", err))?;
+
+    let replayed = claim_json
+        .get("replayed")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let amount = claim_json
+        .get("benefit")
+        .and_then(|b| b.get("amount"))
+        .and_then(|a| a.as_i64())
+        .or_else(|| {
+            target_campaign
+                .get("benefit")
+                .and_then(|b| b.get("amount"))
+                .and_then(|a| a.as_i64())
+        })
+        .ok_or_else(|| "Qoder 领取结果缺少可确认的积分数量".to_string())?;
+
+    if replayed {
+        let saved = qoder_account::update_reward_status(
+            account_id,
+            Some("CLAIMED".to_string()),
+            target_campaign.get("endAt").and_then(|v| v.as_i64()),
+            None,
+        )?;
+        Ok(QoderClaimRewardResult {
+            account_id: account_id.to_string(),
+            success: true,
+            replayed: true,
+            amount: Some(amount),
+            message: format!("今日已领取过 {} 积分", amount),
+            account: Some(saved),
+        })
+    } else {
+        let refresh_result = refresh_account_token_for_variant(variant_key, account_id, false).await;
+        let refreshed = match refresh_result {
+            Ok(account) => Some(account),
+            Err(err) => {
+                logger::log_warn(&format!(
+                    "[Qoder Claim] 领取成功后刷新账号失败: variant={}, account_id={}, error={}",
+                    variant_key, account_id, err
+                ));
+                None
+            }
+        };
+
+        let final_acc = if refreshed.is_some() || qoder_account::load_account(account_id).is_some() {
+            Some(qoder_account::update_reward_status(
+                account_id,
+                Some("CLAIMED".to_string()),
+                target_campaign.get("endAt").and_then(|v| v.as_i64()),
+                None,
+            )?)
+        } else {
+            None
+        };
+
+        Ok(QoderClaimRewardResult {
+            account_id: account_id.to_string(),
+            success: true,
+            replayed: false,
+            amount: Some(amount),
+            message: format!("成功领取 {} 积分！", amount),
+            account: final_acc,
+        })
+    }
+}
+
+pub async fn query_qoder_campaign_status(account_id: &str) -> Result<QoderAccount, String> {
+    let target = qoder_account::load_account(account_id)
+        .ok_or_else(|| format!("Qoder 账号不存在: {}", account_id))?;
+    let target = qoder_account::app_owned_session(&target)?.unwrap_or(target);
+    let kind = qoder_account::account_variant_kind(&target)?;
+    let variant_key = kind.provider_key();
+    let params = resolve_qoder_variant_params(variant_key)
+        .map_err(|err| format!("解析 Qoder 变体参数失败: {}", err))?;
+
+    // 活动是弱依赖：复用已保存的会话，不轮换 token，也不判定账号需要重登。
+    let access_token = extract_access_token_from_account(&target)
+        .ok_or_else(|| "Qoder 账号缺少可用凭证，无法查询活动状态".to_string())?;
+
+    let client = build_reqwest_client()?;
+    let machine_info = read_qoder_machine_info_cache_for_variant(&params).ok().flatten();
+    let headers = build_qoder_claim_headers(kind, params.openapi_base_url, &access_token, machine_info.as_ref());
+
+    let campaigns_url = format!("{}/sash/api/v1/me/campaigns", params.openapi_base_url.trim_end_matches('/'));
+    let campaigns_resp = client
+        .get(&campaigns_url)
+        .headers(headers)
+        .send()
+        .await
+        .map_err(|err| format!("获取 Qoder 活动列表网络错误: {}", err))?;
+
+    let status = campaigns_resp.status();
+    if !status.is_success() {
+        return Err(format!("获取活动列表失败 (HTTP {})", status));
+    }
+
+    let campaigns_json: Value = campaigns_resp
+        .json()
+        .await
+        .map_err(|err| format!("解析 Qoder 活动列表失败: {}", err))?;
+
+    let campaigns_arr = campaigns_json
+        .get("campaigns")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "Qoder 活动列表响应格式无效".to_string())?;
+    // 空列表与歧义/格式错误分开；后两者不能覆盖为「无活动」。
+    let target_campaign = select_unique_100_campaign(campaigns_arr)?;
+
+    let (claim_status, window_end_at) = if let Some(camp) = target_campaign {
+        let claim_status = camp.get("claimStatus").and_then(|v| v.as_str())
+            .ok_or_else(|| "Qoder 活动缺少领取状态".to_string())?;
+        (
+            Some(claim_status.to_string()),
+            camp.get("endAt").and_then(|v| v.as_i64()),
+        )
+    } else {
+        (Some("NONE".to_string()), None)
+    };
+
+    // 存储层在同一锁内检查快照并局部更新，避免旧响应覆盖领取结果或轮换后的凭证。
+    qoder_account::update_reward_status(account_id, claim_status, window_end_at, Some(&target))
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2912,7 +3270,23 @@ mod tests {
     }
 
     #[test]
+    fn daily_reward_selects_only_one_campaign_with_verified_amount() {
+        let campaigns = vec![
+            serde_json::json!({"campaignId": "wrong-title", "placements": ["100 Credits"]}),
+            serde_json::json!({"campaignId": "wrong-date", "campaignKey": "20260923"}),
+            serde_json::json!({"campaignId": "view-only", "actionType": "VIEW_DETAILS", "benefit": {"amount": 100}}),
+            serde_json::json!({"campaignId": "daily-100", "benefit": {"amount": 100}}),
+        ];
+        assert_eq!(select_unique_100_campaign(&campaigns).unwrap().unwrap()["campaignId"].as_str(), Some("daily-100"));
+        let ambiguous = [campaigns[3].clone(), serde_json::json!({
+            "campaignId": "another-100", "benefit": {"amount": 100}
+        })];
+        assert!(select_unique_100_campaign(&ambiguous).is_err());
+        assert!(select_unique_100_campaign(&[]).unwrap().is_none());
+        assert!(select_unique_100_campaign(&campaigns[..3]).unwrap().is_none());
+    }
 
+    #[test]
     fn imported_app_refresh_updates_client_expiry_fields() {
         let mut raw = serde_json::json!({
             "schemaVersion": 1,
@@ -4031,6 +4405,12 @@ mod tests {
                     "addOnQuota": {"total": 200, "used": 100, "remaining": 100, "percentage": 0.5, "unit": "credits"}
                 }
             })),
+            reward_claim_status: None,
+            reward_window_end_at: None,
+            reward_status_updated_at: None,
+            web_session_cookie: None,
+            web_quota_raw: None,
+            web_quota_updated_at: None,
             created_at: 1790230239000,
             last_used: 1790230239000,
         }
@@ -4125,6 +4505,23 @@ mod tests {
                 "addOnQuota": {"total": 500, "used": 0, "remaining": 500, "percentage": 0, "unit": "credits"}
             }
         })
+    }
+
+    #[test]
+    fn app_usage_with_dedicated_packages_does_not_require_legacy_summary_fields() {
+        let body = serde_json::json!({"displayMode": "qoder", "qoderUsage": {
+            "userType": "personal_standard",
+            "userQuota": {"total": 300, "used": 20},
+            "addOnQuota": {"total": 100, "used": 0},
+            "dedicatedResourcePackages": [{"id": "fixture-package", "total": 60, "used": 10}]
+        }});
+        assert!(validate_sash_usage_schema(&body).is_ok());
+        let mut invalid = body.clone();
+        invalid["qoderUsage"]["userQuota"]["used"] = serde_json::json!(-1);
+        assert!(validate_sash_usage_schema(&invalid).is_err());
+        invalid = body;
+        invalid["qoderUsage"]["dedicatedResourcePackages"] = serde_json::json!({});
+        assert!(validate_sash_usage_schema(&invalid).is_err());
     }
 
     #[test]
@@ -4536,5 +4933,31 @@ mod tests {
         assert!(!user_info_missing_security_mobile(
             &serde_json::json!({ "security_mobile": "13800001111" })
         ));
+    }
+
+    #[test]
+    fn qoder_claim_headers_match_contract() {
+        let headers = build_qoder_claim_headers(
+            QoderVariantKind::Qoder,
+            "https://openapi.qoder.sh",
+            "dt-SYNTH-TOKEN-123",
+            None,
+        );
+        assert_eq!(
+            headers.get("authorization").and_then(|v| v.to_str().ok()),
+            Some("Bearer dt-SYNTH-TOKEN-123")
+        );
+        assert_eq!(
+            headers.get("cosy-clienttype").and_then(|v| v.to_str().ok()),
+            Some("10")
+        );
+        assert_eq!(
+            headers.get("origin").and_then(|v| v.to_str().ok()),
+            Some("https://openapi.qoder.sh/growth-page/activity-iframe")
+        );
+        assert_eq!(
+            headers.get("referer").and_then(|v| v.to_str().ok()),
+            Some("https://openapi.qoder.sh/growth-page/activity-iframe")
+        );
     }
 }

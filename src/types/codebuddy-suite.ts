@@ -211,6 +211,8 @@ export interface QuotaCategoryGroup {
   items: OfficialQuotaResource[];
   visible: boolean;
   unlimited?: boolean;
+  /** 仅已用量可确认时，隐藏总额和进度，不推算未知额度。 */
+  usageOnly?: boolean;
 }
 
 // 兼容旧常量名称

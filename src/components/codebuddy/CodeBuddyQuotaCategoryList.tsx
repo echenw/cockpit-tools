@@ -83,9 +83,11 @@ export function CodeBuddyQuotaCategoryList({ groups, formatNumber, formatDateTim
               </div>
               <div className="quota-category-stats">
                 <span className="quota-category-value">
-                  {group.unlimited
-                    ? t('common.shared.quota.unlimited', '无限额度')
-                    : `${formatNumber(group.used)} / ${formatNumber(group.total)}`}
+                  {group.usageOnly
+                    ? formatNumber(group.used)
+                    : group.unlimited
+                      ? t('common.shared.quota.unlimited', '无限额度')
+                      : `${formatNumber(group.used)} / ${formatNumber(group.total)}`}
                 </span>
                 {hasDetails && (
                   <span className="quota-category-expand-icon">
@@ -96,12 +98,14 @@ export function CodeBuddyQuotaCategoryList({ groups, formatNumber, formatDateTim
             </div>
 
             {/* 进度条 */}
-            <div className="quota-category-progress">
-              <div
-                className={`quota-category-progress-bar ${getQuotaClass(group.remainPercent)}`}
-                style={{ width: `${Math.min(100, group.usedPercent)}%` }}
-              />
-            </div>
+            {!group.usageOnly && (
+              <div className="quota-category-progress">
+                <div
+                  className={`quota-category-progress-bar ${getQuotaClass(group.remainPercent)}`}
+                  style={{ width: `${Math.min(100, group.usedPercent)}%` }}
+                />
+              </div>
+            )}
 
             {/* 详情列表 - 展开时显示 */}
             {isExpanded && hasDetails && (

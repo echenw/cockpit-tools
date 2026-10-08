@@ -14,6 +14,10 @@ enum NativeMenuPalette {
     static let switcherHoverBackground = Color(nsColor: .controlColor).opacity(0.55)
 }
 
+private final class HoverState: ObservableObject {
+    @Published var isHovered = false
+}
+
 struct NativeMenuSwitcherSectionView: View {
     @ObservedObject var controller: NativeMenuPopoverController
     let snapshot: NativeMenuSnapshot
@@ -171,7 +175,7 @@ private struct ProviderSwitchTile: View {
     let platform: NativeMenuPlatform
     let selected: Bool
     let onSelect: () -> Void
-    @State private var hovering = false
+    @StateObject private var hover = HoverState()
 
     var body: some View {
         Button(action: self.onSelect) {
@@ -211,7 +215,7 @@ private struct ProviderSwitchTile: View {
         .buttonStyle(.plain)
         .frame(maxWidth: .infinity)
         .onHover { inside in
-            self.hovering = inside
+            self.hover.isHovered = inside
         }
     }
 
@@ -219,7 +223,7 @@ private struct ProviderSwitchTile: View {
         if self.selected {
             return NativeMenuPalette.switcherSelectionBackground
         }
-        if self.hovering {
+        if self.hover.isHovered {
             return NativeMenuPalette.switcherHoverBackground
         }
         return Color.clear
@@ -401,7 +405,7 @@ private struct ActionCapsuleButton: View {
     let emphasized: Bool
     let disabled: Bool
     let action: () -> Void
-    @State private var hovering = false
+    @StateObject private var hover = HoverState()
 
     var body: some View {
         Button(action: self.action) {
@@ -425,7 +429,7 @@ private struct ActionCapsuleButton: View {
         .disabled(self.disabled)
         .opacity(self.disabled ? 0.56 : 1)
         .onHover { inside in
-            self.hovering = inside
+            self.hover.isHovered = inside
         }
     }
 
@@ -435,16 +439,16 @@ private struct ActionCapsuleButton: View {
 
     private var backgroundColor: Color {
         if self.emphasized {
-            return Color(nsColor: .controlAccentColor).opacity(self.hovering && !self.disabled ? 0.88 : 1)
+            return Color(nsColor: .controlAccentColor).opacity(self.hover.isHovered && !self.disabled ? 0.88 : 1)
         }
-        return Color(nsColor: .controlColor).opacity(self.hovering && !self.disabled ? 0.9 : 0.68)
+        return Color(nsColor: .controlColor).opacity(self.hover.isHovered && !self.disabled ? 0.9 : 0.68)
     }
 }
 
 private struct PagerButton: View {
     let systemName: String
     let action: () -> Void
-    @State private var hovering = false
+    @StateObject private var hover = HoverState()
 
     var body: some View {
         Button(action: self.action) {
@@ -454,12 +458,12 @@ private struct PagerButton: View {
                 .frame(width: 22, height: 22)
                 .background(
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(self.hovering ? Color(nsColor: .controlColor) : Color.clear)
+                        .fill(self.hover.isHovered ? Color(nsColor: .controlColor) : Color.clear)
                 )
         }
         .buttonStyle(.plain)
         .onHover { inside in
-            self.hovering = inside
+            self.hover.isHovered = inside
         }
     }
 }
@@ -469,7 +473,7 @@ private struct ToolbarIconButton: View {
     let spinning: Bool
     let disabled: Bool
     let action: () -> Void
-    @State private var hovering = false
+    @StateObject private var hover = HoverState()
 
     var body: some View {
         Button(action: self.action) {
@@ -486,14 +490,14 @@ private struct ToolbarIconButton: View {
             .frame(width: 24, height: 24)
             .background(
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(self.hovering && !self.disabled ? Color(nsColor: .controlColor) : Color.clear)
+                    .fill(self.hover.isHovered && !self.disabled ? Color(nsColor: .controlColor) : Color.clear)
             )
         }
         .buttonStyle(.plain)
         .disabled(self.disabled)
         .opacity(self.disabled && !self.spinning ? 0.78 : 1)
         .onHover { inside in
-            self.hovering = inside
+            self.hover.isHovered = inside
         }
     }
 
