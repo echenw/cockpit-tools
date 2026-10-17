@@ -23,6 +23,7 @@ type InstancesAppType =
   | 'codebuddy'
   | 'codebuddy_cn'
   | 'qoder'
+  | 'qoder_cn_ide'
   | 'trae'
   | 'trae_solo'
   | 'trae_cn'
@@ -38,6 +39,7 @@ interface PlatformInstancesContentProps<TAccount extends AccountLike> {
   renderAccountBadge?: (account: TAccount) => ReactNode;
   getAccountDisplayText?: (account: TAccount) => string;
   getAccountSearchText: (account: TAccount) => string;
+  resolveAccountId?: (accountId: string) => string;
   appType: InstancesAppType;
   isSupported: boolean;
   unsupportedTitleKey: string;
@@ -63,6 +65,7 @@ export function PlatformInstancesContent<TAccount extends AccountLike>({
   renderAccountBadge,
   getAccountDisplayText,
   getAccountSearchText,
+  resolveAccountId,
   appType,
   isSupported,
   unsupportedTitleKey,
@@ -103,6 +106,7 @@ export function PlatformInstancesContent<TAccount extends AccountLike>({
         renderAccountBadge={renderAccountBadge}
         getAccountDisplayText={getAccountDisplayText}
         getAccountSearchText={getAccountSearchText}
+        resolveAccountId={resolveAccountId}
         appType={appType}
         onInstanceStarted={onInstanceStarted}
         onBeforeStart={onBeforeStart}

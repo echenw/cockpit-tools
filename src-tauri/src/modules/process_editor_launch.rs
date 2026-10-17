@@ -1913,20 +1913,3 @@ tell application \"System Events\" to keystroke \"q\" using command down",
         let _ = pid;
     }
 }
-
-// Legacy single-client instance consumers are migrated in the next workflow commit.
-pub fn ensure_qoder_launch_path_configured() -> Result<(), String> {
-    ensure_qoder_variant_launch_path(crate::modules::qoder_variant::QoderVariantKind::Qoder)
-}
-pub fn resolve_qoder_pid(last_pid: Option<u32>, user_data_dir: Option<&str>) -> Option<u32> {
-    resolve_qoder_pid_for_variant(crate::modules::qoder_variant::QoderVariantKind::Qoder, last_pid, user_data_dir)
-}
-pub fn close_qoder_instances(user_data_dirs: &[String], timeout_secs: u64) -> Result<(), String> {
-    close_qoder_variant_instances(crate::modules::qoder_variant::QoderVariantKind::Qoder, user_data_dirs, timeout_secs)
-}
-pub fn start_qoder_with_args_with_new_window(user_data_dir: &str, extra_args: &[String], use_new_window: bool) -> Result<u32, String> {
-    start_qoder_variant_with_args_with_new_window(crate::modules::qoder_variant::QoderVariantKind::Qoder, user_data_dir, extra_args, use_new_window)
-}
-pub fn start_qoder_default_with_args_with_new_window(extra_args: &[String], use_new_window: bool) -> Result<u32, String> {
-    start_qoder_variant_default_with_args_with_new_window(crate::modules::qoder_variant::QoderVariantKind::Qoder, extra_args, use_new_window)
-}

@@ -9,6 +9,7 @@ import {
   importAllAccountsFromTransferJson,
 } from './accountTransferService';
 import { ALL_PLATFORM_IDS, PlatformId } from '../types/platform';
+import { QODER_INSTANCE_VARIANT_IDS, QoderVariantId, qoderAccountSupportsVariant, isQoderVariantId } from '../types/qoder';
 import * as claudeService from './claudeService';
 import { getGroupSettings, GroupSettings, saveGroupSettings } from './groupService';
 import {
@@ -82,7 +83,7 @@ const INSTANCE_PLATFORMS = [
   'grok',
   'codebuddy',
   'codebuddy_cn',
-  'qoder',
+  ...QODER_INSTANCE_VARIANT_IDS,
   'zcode',
   'trae',
   'workbuddy',
@@ -93,6 +94,16 @@ type TransferAccountRecord = Record<string, unknown> & { id: string };
 type AccountLoader = () => Promise<TransferAccountRecord[]>;
 type LegacyFormat = 'data_bundle' | 'account_bundle' | 'legacy_account_json';
 type DataTransferWarningCode = 'accounts_section_missing' | 'config_section_missing';
+
+/** 四个客户端键保留；配置中的账号引用按地区解析到同一共享账号。 */
+async function listQoderVariantTransferAccounts(
+  variant: QoderVariantId,
+): Promise<TransferAccountRecord[]> {
+  const accounts = await qoderService.listQoderAccounts();
+  return accounts.filter(
+    (account) => qoderAccountSupportsVariant(account, variant),
+  ) as unknown as TransferAccountRecord[];
+}
 
 async function listClaudeManagerTransferAccounts(): Promise<TransferAccountRecord[]> {
   const accounts = await claudeService.listClaudeAccounts();
@@ -302,7 +313,10 @@ const ACCOUNT_LOADERS: Record<PlatformId, AccountLoader> = {
   codebuddy: async () => (await codebuddyService.listCodebuddyAccounts()) as unknown as TransferAccountRecord[],
   codebuddy_cn: async () =>
     (await codebuddyCnService.listCodebuddyCnAccounts()) as unknown as TransferAccountRecord[],
-  qoder: async () => (await qoderService.listQoderAccounts()) as unknown as TransferAccountRecord[],
+  qoder: async () => listQoderVariantTransferAccounts('qoder'),
+  qoder_app: async () => listQoderVariantTransferAccounts('qoder_app'),
+  qoder_cn_ide: async () => listQoderVariantTransferAccounts('qoder_cn_ide'),
+  qoder_cn_app: async () => listQoderVariantTransferAccounts('qoder_cn_app'),
   zcode: async () => (await zcodeService.listZcodeAccounts()) as unknown as TransferAccountRecord[],
   trae: async () => (await traeService.listTraeAccounts()) as unknown as TransferAccountRecord[],
   trae_solo: async () => (await traeService.listTraeAccounts()) as unknown as TransferAccountRecord[],
@@ -325,7 +339,10 @@ const LEGACY_IMPORTERS: Record<PlatformId, ((jsonContent: string) => Promise<unk
   grok: undefined,
   codebuddy: codebuddyService.importCodebuddyFromJson,
   codebuddy_cn: codebuddyCnService.importCodebuddyCnFromJson,
-  qoder: qoderService.importQoderFromJson,
+  qoder: (jsonContent) => qoderService.importQoderFromJson(jsonContent, 'qoder'),
+  qoder_app: (jsonContent) => qoderService.importQoderFromJson(jsonContent, 'qoder_app'),
+  qoder_cn_ide: (jsonContent) => qoderService.importQoderFromJson(jsonContent, 'qoder_cn_ide'),
+  qoder_cn_app: (jsonContent) => qoderService.importQoderFromJson(jsonContent, 'qoder_cn_app'),
   zcode: zcodeService.importZcodeFromJson,
   trae: traeService.importTraeFromJson,
   trae_solo: traeService.importTraeFromJson,
@@ -434,6 +451,18 @@ function buildAccountRegistry(
   for (const [platform, accounts] of entries) {
     byPlatform[platform] = accounts;
     byId[platform] = new Map(accounts.map((account) => [String(account.id), account]));
+    if (isQoderVariantId(platform)) {
+      // 地区合并后旧绑定仍有效；导出时解析到共享账号，保留现有 canonical ID 的优先级。
+      for (const account of accounts) {
+        if (!Array.isArray(account.legacy_ids)) continue;
+        for (const legacyId of account.legacy_ids) {
+          const alias = normalizeString(legacyId);
+          if (alias && !byId[platform].has(alias)) {
+            byId[platform].set(alias, account);
+          }
+        }
+      }
+    }
   }
 
   return {
@@ -494,6 +523,9 @@ function buildAccountRef(platform: PlatformId, account: TransferAccountRecord): 
         normalizeString(account.user_id) ?? normalizeString(account.principal_id) ?? undefined;
       break;
     case 'qoder':
+    case 'qoder_app':
+    case 'qoder_cn_ide':
+    case 'qoder_cn_app':
     case 'trae':
     case 'trae_solo':
     case 'trae_cn':
@@ -574,6 +606,9 @@ function scoreAccountRef(ref: DataTransferAccountRef, account: TransferAccountRe
       addStringScore(ref.email, account.email, 10);
       break;
     case 'qoder':
+    case 'qoder_app':
+    case 'qoder_cn_ide':
+    case 'qoder_cn_app':
     case 'trae':
     case 'trae_solo':
     case 'trae_cn':
@@ -1323,7 +1358,8 @@ function detectLegacyPlatform(value: unknown): PlatformId | null {
     return 'trae';
   }
   if ('auth_user_info_raw' in sample || 'auth_credit_usage_raw' in sample || 'credits_usage_percent' in sample) {
-    return 'qoder';
+    const variant = normalizeString(sample.variant);
+    return variant !== null && isQoderVariantId(variant) ? variant : 'qoder';
   }
   if ('zcode_jwt_token' in sample || ('quota_raw' in sample && 'provider' in sample)) {
     return 'zcode';

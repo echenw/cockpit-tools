@@ -1,0 +1,132 @@
+.action-bubble-container {
+  position: fixed;
+  z-index: 10000;
+  pointer-events: auto;
+  animation: actionBubblePopIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  transition: opacity 0.15s ease;
+  user-select: none;
+  /* 整个气泡（主体+箭头）统一由外层 drop-shadow 投影，轮廓100%浑然天成 */
+  filter: drop-shadow(0 6px 18px rgba(0, 0, 0, 0.2)) drop-shadow(0 2px 4px rgba(0, 0, 0, 0.08));
+}
+
+@keyframes actionBubblePopIn {
+  0% {
+    opacity: 0;
+    transform: scale(0.92) translateY(4px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+/* 提示色调 (Blue / Sky) */
+.action-bubble-container.info {
+  --bubble-bg: color-mix(in srgb, var(--bg-surface) 93%, #3b82f6);
+  --bubble-border: color-mix(in srgb, #3b82f6 45%, var(--border));
+  --bubble-text: var(--text-primary);
+  --bubble-icon-bg: color-mix(in srgb, #3b82f6 18%, transparent);
+  --bubble-icon-color: #3b82f6;
+}
+
+/* 成功色调 (Emerald / Green) */
+.action-bubble-container.success {
+  --bubble-bg: color-mix(in srgb, var(--bg-surface) 93%, #10b981);
+  --bubble-border: color-mix(in srgb, #10b981 45%, var(--border));
+  --bubble-text: var(--text-primary);
+  --bubble-icon-bg: color-mix(in srgb, #10b981 18%, transparent);
+  --bubble-icon-color: #10b981;
+}
+
+/* 失败色调 (Rose / Red) */
+.action-bubble-container.error {
+  --bubble-bg: color-mix(in srgb, var(--bg-surface) 90%, #ef4444);
+  --bubble-border: color-mix(in srgb, #ef4444 50%, var(--border));
+  --bubble-text: var(--text-primary);
+  --bubble-icon-bg: color-mix(in srgb, #ef4444 18%, transparent);
+  --bubble-icon-color: #ef4444;
+}
+
+.action-bubble-wrapper {
+  position: relative;
+  display: inline-block;
+}
+
+/* 单一连续矢量背景：通过计算的一体化 Path 绘制，不存在任何分割线或拼接 */
+.action-bubble-svg-shape {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  overflow: visible;
+  display: block;
+}
+
+.action-bubble-path {
+  fill: var(--bubble-bg);
+  stroke: var(--bubble-border);
+  stroke-width: 1px;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+/* 内容层：无自身边框与背景，纯净覆盖在 SVG 气泡上 */
+.action-bubble-content {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 13px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
+  max-width: min(480px, calc(100vw - 32px));
+  min-width: 130px;
+  position: relative;
+  z-index: 1;
+  box-sizing: border-box;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+.action-bubble-icon {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--bubble-icon-bg);
+  color: var(--bubble-icon-color);
+  flex-shrink: 0;
+  margin-top: 0;
+}
+
+.action-bubble-text {
+  flex: 1;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  color: var(--bubble-text);
+}
+
+.action-bubble-close-btn {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  margin-left: 4px;
+  margin-top: 1px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.action-bubble-close-btn:hover {
+  background: color-mix(in srgb, var(--text-primary) 12%, transparent);
+  color: var(--text-primary);
+}

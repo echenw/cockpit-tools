@@ -170,8 +170,7 @@ Gerencie instâncias do CodeBuddy CN com perfis isolados e controles de ciclo de
 
 ### 10. Gerenciamento de Contas do Qoder
 
-- **Contas por região**: contas internacionais e CN permanecem separadas. IDE e App compartilham a identidade regional, com credenciais e seleção atual por cliente. A união de registros antigos preserva backups criptografados e aliases dos IDs anteriores. Migração real e login completo ainda não foram verificados nesta revisão estática.
-
+- **Contas por região**: os quatro acessos e ícones permanecem. App e IDE compartilham contas da mesma região; autorizar ou importar em um acesso disponibiliza a conta em ambos. Contas internacionais e CN ficam separadas. Cada conta regional mantém um único RT de dispositivo criptografado, com AT e credenciais de job específicos de cada cliente e seleção independente da conta atual. Excluir uma conta a remove das duas listas da mesma região. Registros antigos são unidos pelo ID oficial e pela região, com backup criptografado em `qoder-regional-backups/<migration-id>/` e referências aos IDs antigos preservadas. A compilação e os testes locais usam dados fictícios; a migração de contas reais e os fluxos dos clientes nativos não foram executados.
 - **Importação de Contas**: suporta importação local e importação JSON
 - **Visualização de Cotas**: mostra o uso de créditos, créditos restantes e valores brutos do plano
 - **Operações em Lote**: suporta tags, filtros, exportação e exclusão/atualização em lote
@@ -179,7 +178,7 @@ Gerencie instâncias do CodeBuddy CN com perfis isolados e controles de ciclo de
 
 #### 9.1 Qoder Multi-Instância
 
-Gerencie instâncias do Qoder com perfis isolados e controles de ciclo de vida.
+Qoder IDE e Qoder CN IDE permitem executar várias instâncias com perfis isolados. As versões App, Qoder e Qoder CN, não permitem executar várias sessões ao mesmo tempo devido à limitação de instância única do cliente oficial; use a troca de contas para alternar entre elas.
 
 - **Perfis Isolados**: cada instância utiliza seu próprio diretório de dados do usuário.
 - **Ciclo de Vida Rápido**: inicie, pare e force a parada de instâncias.

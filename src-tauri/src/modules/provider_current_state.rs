@@ -67,17 +67,43 @@ fn load_state() -> Result<ProviderCurrentState, String> {
         return Ok(ProviderCurrentState::new());
     }
 
-    crate::modules::atomic_write::parse_json_with_auto_restore::<ProviderCurrentState>(
-        &path, &content,
-    )
-    .map_err(|e| format!("解析当前账号映射失败: path={}, error={}", path.display(), e))
+    parse_state_or_recover(&content)
 }
 
-fn save_state(state: &ProviderCurrentState) -> Result<(), String> {
+fn parse_state_or_recover(content: &str) -> Result<ProviderCurrentState, String> {
+    match serde_json::from_str(content) {
+        Ok(state) => Ok(state),
+        Err(_) => {
+            // 旧读取只触发恢复检查；update_state 在文件锁内重读主文件。
+            // 若并发写入已经修好主文件，直接保留并返回它，不再用备份覆盖。
+            let mut recovered = ProviderCurrentState::new();
+            update_state(|state| recovered = state.clone())?;
+            Ok(recovered)
+        }
+    }
+}
+
+fn update_state(update: impl FnOnce(&mut ProviderCurrentState)) -> Result<(), String> {
     let path = get_state_path()?;
-    let content = serde_json::to_string_pretty(state)
-        .map_err(|e| format!("序列化当前账号映射失败: {}", e))?;
-    crate::modules::atomic_write::write_string_atomic(&path, &content)
+    crate::modules::atomic_write::update_string_atomic(&path, |content| {
+        let mut state = match content.filter(|value| !value.trim().is_empty()) {
+            Some(content) => match serde_json::from_str::<ProviderCurrentState>(content) {
+                Ok(state) => state,
+                Err(error) => {
+                    // 已持有文件锁；仅读取备份参与本次合并，不能再次调用加锁恢复。
+                    let backup = path.with_file_name(format!("{PROVIDER_CURRENT_STATE_FILE}.bak"));
+                    let restored = fs::read_to_string(&backup)
+                        .map_err(|e| format!("解析当前账号映射失败: {error}；读取备份失败: {e}"))?;
+                    serde_json::from_str::<ProviderCurrentState>(&restored)
+                        .map_err(|e| format!("解析当前账号映射失败: {error}；备份无效: {e}"))?
+                }
+            },
+            None => ProviderCurrentState::new(),
+        };
+        update(&mut state);
+        serde_json::to_string_pretty(&state)
+            .map_err(|e| format!("序列化当前账号映射失败: {e}"))
+    })
         .map_err(|e| format!("保存当前账号映射失败: path={}, error={}", path.display(), e))
 }
 
@@ -101,30 +127,103 @@ where
     if existing_ids.into_iter().any(|id| id == current_id.as_str()) {
         Some(current_id)
     } else {
-        let _ = set_current_account_id(platform, None);
+        let _ = clear_current_account_if_matches(platform, &current_id);
         None
     }
 }
 
 pub fn set_current_account_id(platform: &str, account_id: Option<&str>) -> Result<(), String> {
     let key = normalize_platform(platform)?;
-    let mut state = load_state()?;
-    if let Some(account_id) = account_id.and_then(|value| {
-        let trimmed = value.trim();
-        (!trimmed.is_empty()).then_some(trimmed)
-    }) {
-        state
-            .current_accounts
-            .insert(key.to_string(), account_id.to_string());
-    } else {
-        state.current_accounts.remove(key);
-    }
-    save_state(&state)
+    update_state(|state| {
+        if let Some(id) = account_id.map(str::trim).filter(|value| !value.is_empty()) {
+            state.current_accounts.insert(key.to_string(), id.to_string());
+        } else {
+            state.current_accounts.remove(key);
+        }
+    })
+}
+
+fn clear_current_account_if_matches(platform: &str, expected: &str) -> Result<(), String> {
+    let key = normalize_platform(platform)?;
+    update_state(|state| {
+        let current = state.current_accounts.get(key).map(|id| id.trim().to_string());
+        let current = if matches!(key, "qoder" | "qoder_app" | "qoder_cn_ide" | "qoder_cn_app") {
+            current.map(|id| crate::modules::qoder_account::load_account(&id)
+                .map(|account| account.id).unwrap_or(id))
+        } else { current };
+        if current.as_deref() == Some(expected) {
+            state.current_accounts.remove(key);
+        }
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_corrupt_read_cannot_restore_over_a_concurrent_current_account_update() {
+        let _lock = crate::modules::test_support::env_lock().lock().unwrap();
+        let _guard = DataDirGuard::new("qoder-current-stale-recovery");
+        set_current_account_id("qoder", Some("kept-fixture")).unwrap();
+        set_current_account_id("qoder_app", Some("previous-fixture")).unwrap();
+        let path = get_state_path().unwrap();
+        fs::write(&path, "{invalid").unwrap();
+        let stale_read = fs::read_to_string(&path).unwrap();
+        // The writer repairs from the backup and saves a newer current account.
+        set_current_account_id("qoder_cn_ide", Some("new-current-fixture")).unwrap();
+        let before = fs::read_to_string(&path).unwrap();
+        // Resume the reader with its earlier corrupt observation, as in load_state.
+        let state = parse_state_or_recover(&stale_read).unwrap();
+        assert_eq!(state.current_accounts.get("qoder_cn_ide").map(String::as_str), Some("new-current-fixture"));
+        assert_eq!(state.current_accounts.get("qoder").map(String::as_str), Some("kept-fixture"));
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&fs::read_to_string(&path).unwrap()).unwrap(),
+            serde_json::from_str::<serde_json::Value>(&before).unwrap());
+        // Without a concurrent repair, a real corrupt read still recovers its backup.
+        fs::write(&path, "{invalid-again").unwrap();
+        assert_eq!(load_state().unwrap().current_accounts.get("qoder").map(String::as_str), Some("kept-fixture"));
+    }
+
+    #[test]
+    fn concurrent_qoder_current_updates_keep_each_variant_and_stale_cleanup_keeps_new_value() {
+        let _lock = crate::modules::test_support::env_lock().lock().unwrap();
+        let _guard = DataDirGuard::new("qoder-concurrent-current");
+        let variants = ["qoder", "qoder_app", "qoder_cn_ide", "qoder_cn_app"];
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(variants.len()));
+        let threads: Vec<_> = variants.into_iter().map(|variant| {
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                let mut results = Vec::new();
+                for revision in 0..16 {
+                    barrier.wait();
+                    results.push(set_current_account_id(variant, Some(&format!("fixture-{variant}-{revision}"))));
+                    barrier.wait();
+                }
+                for result in results { result.unwrap(); }
+            })
+        }).collect();
+        for thread in threads { thread.join().unwrap(); }
+        for variant in variants {
+            assert_eq!(get_current_account_id(variant).unwrap(), Some(format!("fixture-{variant}-15")));
+        }
+        let previous = get_current_account_id("qoder").unwrap().unwrap();
+        set_current_account_id("qoder", Some("new-current-fixture")).unwrap();
+        clear_current_account_if_matches("qoder", &previous).unwrap();
+        assert_eq!(get_current_account_id("qoder").unwrap().as_deref(), Some("new-current-fixture"));
+        assert_eq!(get_current_account_id("qoder_app").unwrap().as_deref(), Some("fixture-qoder_app-15"));
+    }
+
+    #[test]
+    fn qoder_current_update_merges_valid_backup_when_main_file_is_corrupt() {
+        let _lock = crate::modules::test_support::env_lock().lock().unwrap();
+        let _guard = DataDirGuard::new("qoder-current-backup");
+        set_current_account_id("qoder", Some("kept-fixture")).unwrap();
+        set_current_account_id("qoder_app", Some("previous-fixture")).unwrap();
+        fs::write(get_state_path().unwrap(), "{invalid").unwrap();
+        set_current_account_id("qoder_cn_ide", Some("new-fixture")).unwrap();
+        assert_eq!(get_current_account_id("qoder").unwrap().as_deref(), Some("kept-fixture"));
+        assert_eq!(get_current_account_id("qoder_cn_ide").unwrap().as_deref(), Some("new-fixture"));
+    }
 
     fn temp_data_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(

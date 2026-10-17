@@ -16,6 +16,9 @@ const TRAY_MIGRATED_PLATFORM_IDS: PlatformId[] = [
   'codebuddy',
   'codebuddy_cn',
   'qoder',
+  'qoder_app',
+  'qoder_cn_ide',
+  'qoder_cn_app',
   'zcode',
   'trae',
   'trae_solo',
@@ -26,8 +29,11 @@ const TRAY_MIGRATED_PLATFORM_IDS: PlatformId[] = [
 const DEFAULT_CODEBUDDY_GROUP_ID = 'codebuddy-suite';
 const DEFAULT_ANTIGRAVITY_GROUP_ID = 'antigravity-suite';
 const DEFAULT_TRAE_GROUP_ID = 'trae-suite';
+const DEFAULT_QODER_GROUP_ID = 'qoder-suite';
 const DEFAULT_CODEX_GROUP_ID = 'codex-suite';
 const TRAE_SUITE_PLATFORM_IDS: PlatformId[] = ['trae', 'trae_solo', 'trae_cn', 'trae_solo_cn'];
+// 成员显示名与变体显示名一致（qoder = Qoder IDE，qoder_app = Qoder）。
+const QODER_SUITE_PLATFORM_IDS: PlatformId[] = ['qoder', 'qoder_app', 'qoder_cn_ide', 'qoder_cn_app'];
 const CODEX_SUITE_PLATFORM_IDS: PlatformId[] = ['codex', 'codex_api_service'];
 
 const PLATFORM_ENTRY_PREFIX = 'platform:';
@@ -293,6 +299,23 @@ function createDefaultTraeSuiteGroup(): PlatformLayoutGroup {
   };
 }
 
+function createDefaultQoderSuiteGroup(): PlatformLayoutGroup {
+  return {
+    id: DEFAULT_QODER_GROUP_ID,
+    name: 'Qoder',
+    platformIds: QODER_SUITE_PLATFORM_IDS,
+    defaultPlatformId: 'qoder',
+    iconKind: 'platform',
+    iconPlatformId: 'qoder',
+    childConfigs: [
+      { platformId: 'qoder', name: 'Qoder IDE' },
+      { platformId: 'qoder_app', name: 'Qoder' },
+      { platformId: 'qoder_cn_ide', name: 'Qoder CN IDE' },
+      { platformId: 'qoder_cn_app', name: 'Qoder CN' },
+    ],
+  };
+}
+
 function createDefaultCodexSuiteGroup(): PlatformLayoutGroup {
   return {
     id: DEFAULT_CODEX_GROUP_ID,
@@ -328,6 +351,7 @@ function legacyDefaultPlatformGroups(): PlatformLayoutGroup[] {
       iconPlatformId: 'codebuddy',
     },
     createDefaultTraeSuiteGroup(),
+    createDefaultQoderSuiteGroup(),
   ];
 }
 
@@ -551,7 +575,16 @@ function normalizeGroupName(raw: unknown, fallbackPlatform: PlatformId): string 
     return 'WorkBuddy';
   }
   if (fallbackPlatform === 'qoder') {
+    return 'Qoder IDE';
+  }
+  if (fallbackPlatform === 'qoder_app') {
     return 'Qoder';
+  }
+  if (fallbackPlatform === 'qoder_cn_ide') {
+    return 'Qoder CN IDE';
+  }
+  if (fallbackPlatform === 'qoder_cn_app') {
+    return 'Qoder CN';
   }
   if (fallbackPlatform === 'zcode') {
     return 'ZCode';
