@@ -186,6 +186,7 @@ interface InstancesManagerProps<TAccount extends AccountLike> {
   renderAccountBadge?: (account: TAccount) => ReactNode;
   getAccountDisplayText?: (account: TAccount) => string;
   getAccountSearchText?: (account: TAccount) => string;
+  resolveAccountId?: (accountId: string) => string;
   appType?:
     | "antigravity"
     | "antigravity_ide"
@@ -199,6 +200,7 @@ interface InstancesManagerProps<TAccount extends AccountLike> {
     | "codebuddy"
     | "codebuddy_cn"
     | "qoder"
+    | "qoder_cn_ide"
     | "trae"
     | "trae_solo"
     | "trae_cn"
@@ -616,6 +618,7 @@ export function InstancesManager<TAccount extends AccountLike>({
   renderAccountBadge,
   getAccountDisplayText,
   getAccountSearchText,
+  resolveAccountId,
   appType = "antigravity",
   onInstanceStarted,
   onBeforeStart,
@@ -870,7 +873,10 @@ export function InstancesManager<TAccount extends AccountLike>({
       }
       const providerGatewayAccountId =
         parseProviderGatewayBindAccountId(bindAccountId);
-      const targetAccountId = providerGatewayAccountId || bindAccountId;
+      const rawAccountId = providerGatewayAccountId || bindAccountId;
+      const targetAccountId = resolveAccountId
+        ? resolveAccountId(rawAccountId)
+        : rawAccountId;
       const account =
         accounts.find((item) => item.id === targetAccountId) || null;
       return {
@@ -881,7 +887,7 @@ export function InstancesManager<TAccount extends AccountLike>({
         isProviderGateway: Boolean(providerGatewayAccountId),
       };
     },
-    [accounts, isApiServiceBindId, parseProviderGatewayBindAccountId],
+    [accounts, isApiServiceBindId, parseProviderGatewayBindAccountId, resolveAccountId],
   );
   const filterAccountsForLaunchMode = useCallback(
     (source: TAccount[], launchMode: InstanceLaunchMode) =>
@@ -1745,6 +1751,7 @@ export function InstancesManager<TAccount extends AccountLike>({
       rawApp === "codebuddy" ||
       rawApp === "codebuddy_cn" ||
       rawApp === "qoder" ||
+      rawApp === "qoder_cn_ide" ||
       rawApp === "zcode"
         ? rawApp
         : appType;

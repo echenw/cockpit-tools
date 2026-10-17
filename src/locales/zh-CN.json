@@ -148,6 +148,7 @@
     },
     "confirm": "确认",
     "cancel": "取消",
+    "stop": "停止",
     "cancelling": "正在取消...",
     "cancelled": "已取消",
     "save": "保存",
@@ -6238,7 +6239,10 @@
     },
     "qoder": {
       "title": "Qoder 设置",
-      "appPath": "Qoder 路径"
+      "appPathIde": "Qoder IDE 路径",
+      "appPathApp": "Qoder 路径",
+      "appPathCnIde": "Qoder CN IDE 路径",
+      "appPathCnApp": "Qoder CN 路径"
     },
     "zcode": {
       "title": "ZCode 设置",
@@ -6818,7 +6822,21 @@
     }
   },
   "qoder": {
+    "quotaSync": {
+      "unknownPlan": "套餐未获取"
+    },
     "title": "Qoder 账号管理",
+    "suite": {
+      "sharedAccounts": "同地区的 App 与 IDE 共用账号，授权或导入一次，两端都可使用。",
+      "deleteSharedSingle": "确认删除该共享账号？将同时从同地区的 App 和 IDE 列表移除。",
+      "deleteSharedMulti": "确认删除选中的 {{count}} 个共享账号？将同时从同地区的 App 和 IDE 列表移除。",
+      "variants": {
+        "qoder": "Qoder IDE",
+        "qoder_app": "Qoder",
+        "qoder_cn_ide": "Qoder CN IDE",
+        "qoder_cn_app": "Qoder CN"
+      }
+    },
     "flowNotice": {
       "title": "Qoder 账号接入说明（点击展开/收起）",
       "desc": "当前支持官方 CLI device login 授权、本地导入、JSON 导入、切号注入、应用多开绑定与配额概览。浏览器授权无需保持 Qoder 运行；切号注入按 Qoder 客户端真实落盘规则写回。",
@@ -6827,7 +6845,8 @@
     },
     "oauth": {
       "hint": "点击下方按钮，在浏览器中完成 Qoder 官方授权。该流程走官方 CLI device login 链路，无需保持 Qoder 运行。",
-      "copyLoginUrl": "复制登录链接"
+      "copyLoginUrl": "复制登录链接",
+      "accountNotVisible": "授权账号未出现在已保存的账号列表中"
     },
     "usageOverview": {
       "title": "用量概览",
@@ -6838,14 +6857,11 @@
       "upgradeHint": "升级套餐以提升每月额度",
       "upgradeAction": "升级"
     },
-    "comingSoon": {
-      "title": "Qoder 账号接入准备中",
-      "desc": "当前版本已支持 Qoder 应用多开、平台管理与菜单栏入口，账号登录与配额面板将在后续版本开放。"
-    },
     "instances": {
       "unsupported": {
         "descPlatform": "Qoder 应用多开仅支持 macOS、Windows 和 Linux。"
-      }
+      },
+      "appMultiInstanceUnsupported": "{{variant}} 客户端不支持应用多开：官方单实例机制限制，同一客户端无法同时运行多个登录态；可使用账号切换功能更换账号。"
     },
     "addModal": {
       "title": "添加 Qoder 账号"
@@ -6853,7 +6869,8 @@
     "import": {
       "localDesc": "从本机 Qoder 客户端读取当前登录状态（包含用户信息、套餐与 Credits 使用情况）。",
       "localFailed": "本机导入失败：{{error}}",
-      "localSuccess": "已从本机 Qoder 导入账号。"
+      "localSuccess": "已从本机 Qoder 导入账号。",
+      "autoCloseCountdown": "{{seconds}} 秒后自动关闭弹窗"
     },
     "empty": {
       "desc": "点击“添加账号”，可使用授权登录、本机导入或 JSON 导入。"

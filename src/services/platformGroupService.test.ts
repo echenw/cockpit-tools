@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { deferred, loadHookModule, settlePromises } from '../../tests/helpers/reactHookHarness';
+import type { QoderAccount, QoderVariantId } from '../types/qoder';
 
 type StoredGroup = {
   id: string;
@@ -16,12 +17,20 @@ function group(id: string, overrides: Partial<StoredGroup> = {}): StoredGroup {
   return { id, name: id, accountIds: [`${id}-account`], createdAt: 100, ...overrides };
 }
 
-function harness(initial: Record<string, StoredGroup[]> = {}) {
+function qoderAccount(id: string, variant: QoderVariantId, legacyIds: string[] = []): QoderAccount {
+  return { id, variant, legacy_ids: legacyIds, email: `${id}@example.test`, created_at: 100, last_used: 100 };
+}
+
+function harness(
+  initial: Record<string, StoredGroup[]> = {},
+  qoderAccounts: QoderAccount[] = [],
+) {
   const disk = new Map(Object.entries(initial).map(([platform, groups]) => [platform, JSON.stringify(groups)]));
   const readErrors = new Map<string, Error>();
   const writeErrors = new Map<string, Error>();
   const writeGates = new Map<string, ReturnType<typeof deferred<void>>>();
   const writes: { platform: string; data: string }[] = [];
+  const qoder = { accounts: qoderAccounts, error: null as Error | null };
   const imports = {
     '@tauri-apps/api/core': {
       async invoke(command: string, args?: { platform?: string; data?: string }) {
@@ -57,12 +66,76 @@ function harness(initial: Record<string, StoredGroup[]> = {}) {
     ...imports,
     './accountGroupService': antigravity,
     './codexAccountGroupService': codex,
+    './qoderService': {
+      async listQoderAccounts() {
+        if (qoder.error) throw qoder.error;
+        return qoder.accounts;
+      },
+    },
+    '../types/qoder': loadHookModule(new URL('../types/qoder.ts', import.meta.url), {}).exports,
   }, globals).exports as typeof import('./platformGroupService');
   return {
-    platform, antigravity, codex, disk, writes, readErrors, writeErrors, writeGates,
+    platform, antigravity, codex, disk, writes, readErrors, writeErrors, writeGates, qoder,
     stored(key: string): StoredGroup[] { return JSON.parse(disk.get(key) ?? '[]'); },
   };
 }
+
+for (const variant of ['qoder', 'qoder_app', 'qoder_cn_ide', 'qoder_cn_app'] as const) {
+  test(`${variant}: merged group members survive reading, editing and reloading`, async () => {
+    const h = harness({ [variant]: [group('selected', { accountIds: ['retired-id'] })] }, [
+      qoderAccount('current-id', variant.startsWith('qoder_cn_') ? 'qoder_cn_app' : 'qoder_app', ['retired-id']),
+    ]);
+    const groups = await h.platform.getPlatformGroups(variant);
+    assert.deepEqual(Array.from(groups[0].accountIds), ['current-id']);
+    assert.deepEqual(h.stored(variant)[0].accountIds, ['retired-id']);
+    assert.equal(h.writes.length, 0);
+
+    // 编辑弹窗按当前账号 ID 选中成员，再全量替换保存；读取结果必须保留该成员。
+    const currentIds = new Set(h.qoder.accounts.map((account) => account.id));
+    const selected = Array.from(groups[0].accountIds).filter((id) => currentIds.has(id));
+    await h.platform.setPlatformGroupAccounts(variant, 'selected', selected);
+    assert.deepEqual(h.stored(variant)[0].accountIds, ['current-id']);
+    h.platform.invalidatePlatformGroupCache(variant);
+    assert.deepEqual(Array.from((await h.platform.getPlatformGroups(variant))[0].accountIds), ['current-id']);
+  });
+}
+
+test('Qoder group writes preserve unknown IDs, current ID priority and region boundaries', async () => {
+  const h = harness({ qoder: [group('selected', {
+    accountIds: ['retired-id', 'current-id', 'live-id', 'cn-retired', 'unknown-id'],
+  })] }, [
+    qoderAccount('current-id', 'qoder_app', ['retired-id', 'live-id']),
+    qoderAccount('live-id', 'qoder'),
+    qoderAccount('cn-current', 'qoder_cn_app', ['cn-retired']),
+  ]);
+  const groups = await h.platform.getPlatformGroups('qoder');
+  assert.deepEqual(Array.from(groups[0].accountIds), ['current-id', 'live-id', 'cn-retired', 'unknown-id']);
+  await h.platform.setPlatformGroupAccounts('qoder', 'selected', ['retired-id', 'current-id', 'unknown-id']);
+  assert.deepEqual(h.stored('qoder')[0].accountIds, ['current-id', 'unknown-id']);
+});
+
+test('cached Qoder groups resolve a later account merge from the current account list', async () => {
+  const h = harness({ qoder: [group('selected', { accountIds: ['old-current'] })] }, [
+    qoderAccount('old-current', 'qoder'),
+  ]);
+  assert.deepEqual(Array.from((await h.platform.getPlatformGroups('qoder'))[0].accountIds), ['old-current']);
+  h.qoder.accounts = [qoderAccount('new-current', 'qoder_app', ['old-current'])];
+  assert.deepEqual(Array.from((await h.platform.getPlatformGroups('qoder'))[0].accountIds), ['new-current']);
+});
+
+test('Qoder account read failure cannot overwrite group membership or affect other platforms', async () => {
+  const h = harness({
+    qoder: [group('selected', { accountIds: ['retired-id'] })],
+    cursor: [group('selected')],
+  }, [qoderAccount('current-id', 'qoder', ['retired-id'])]);
+  await h.platform.getPlatformGroups('qoder');
+  h.qoder.error = new Error('account list failed');
+  await assert.rejects(h.platform.setPlatformGroupAccounts('qoder', 'selected', ['current-id']), /account list failed/);
+  assert.deepEqual(h.stored('qoder')[0].accountIds, ['retired-id']);
+  assert.equal(h.writes.length, 0);
+  await h.platform.renamePlatformGroup('cursor', 'selected', 'Cursor renamed');
+  assert.equal(h.stored('cursor')[0].name, 'Cursor renamed');
+});
 
 test('common Codex edits retain quota policies and persist sort order for both entry points', async () => {
   const h = harness({ codex: [

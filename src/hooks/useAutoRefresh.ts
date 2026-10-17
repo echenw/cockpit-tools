@@ -14,7 +14,8 @@ import { useGrokAccountStore } from '../stores/useGrokAccountStore';
 import { useCodebuddyAccountStore } from '../stores/useCodebuddyAccountStore';
 import { useCodebuddyCnAccountStore } from '../stores/useCodebuddyCnAccountStore';
 import { useWorkbuddyAccountStore } from '../stores/useWorkbuddyAccountStore';
-import { useQoderAccountStore } from '../stores/useQoderAccountStore';
+import { ensureQoderAccountsLoaded, refreshAllQoderVariants, useQoderAccountStore } from '../stores/useQoderAccountStore';
+import { refreshQoderCurrentAccountIds, useQoderCurrentAccountStore } from '../stores/useQoderCurrentAccountStore';
 import { useZcodeAccountStore } from '../stores/useZcodeAccountStore';
 import { useTraeAccountStore } from '../stores/useTraeAccountStore';
 import { useZedAccountStore } from '../stores/useZedAccountStore';
@@ -26,13 +27,19 @@ import { getGrokAccountDisplayEmail } from '../types/grok';
 import { getClaudeAccountDisplayEmail } from '../types/claude';
 import { getCodebuddyAccountDisplayEmail } from '../types/codebuddy';
 import { getWorkbuddyAccountDisplayEmail } from '../types/workbuddy';
-import { getQoderAccountDisplayEmail } from '../types/qoder';
+import {
+  getQoderAccountDisplayEmail,
+  QODER_VARIANT_DISPLAY_NAMES,
+  QODER_VARIANT_IDS,
+  type QoderVariantId,
+} from '../types/qoder';
 import { getZcodeAccountDisplayEmail } from '../types/zcode';
 import {
   getTraeAccountDisplayEmail,
   getTraeAccountPlatformId,
 } from '../types/trae';
 import { getZedAccountDisplayEmail } from '../types/zed';
+import { getProviderCurrentAccountId } from '../services/providerCurrentAccountService';
 import * as traeService from '../services/traeService';
 import {
   loadCurrentAccountRefreshMinutesMap,
@@ -106,13 +113,13 @@ interface GeneralConfig {
 }
 
 interface PlatformRefreshDescriptor {
-  key: CurrentAccountRefreshPlatform;
+  key: CurrentAccountRefreshPlatform | QoderVariantId;
   label: string;
   intervalMinutes: number;
   currentMinutes: number;
   fullRefreshingRef: MutableRefObject<boolean>;
   currentRefreshingRef: MutableRefObject<boolean>;
-  runFullRefresh: () => Promise<void>;
+  runFullRefresh?: () => Promise<void>;
   runCurrentRefresh: () => Promise<void>;
 }
 
@@ -134,7 +141,7 @@ function buildEnabledPlatformsSummary(
   descriptors: PlatformRefreshDescriptor[],
 ): string {
   const fullSummary = descriptors
-    .filter((descriptor) => descriptor.intervalMinutes > 0)
+    .filter((descriptor) => descriptor.intervalMinutes > 0 && descriptor.runFullRefresh)
     .map((descriptor) => `${descriptor.key}=${descriptor.intervalMinutes}`);
   const currentSummary = descriptors
     .filter((descriptor) => descriptor.intervalMinutes > 0)
@@ -157,7 +164,7 @@ function resolveCurrentMinutes(
     : defaultMap[platform];
 }
 
-function getCurrentAccountEmails(): Record<CurrentAccountRefreshPlatform, string | null> {
+function getCurrentAccountEmails(): Record<Exclude<CurrentAccountRefreshPlatform, 'qoder'>, string | null> {
   const getProviderEmail = <T extends { id: string; email?: string | null }>(
     store: { getState: () => { currentAccountId: string | null; accounts: T[] } },
     getDisplayEmail: (account: T) => string,
@@ -201,7 +208,6 @@ function getCurrentAccountEmails(): Record<CurrentAccountRefreshPlatform, string
     codebuddy: getProviderEmail(useCodebuddyAccountStore, getCodebuddyAccountDisplayEmail),
     codebuddy_cn: getProviderEmail(useCodebuddyCnAccountStore, getCodebuddyAccountDisplayEmail),
     workbuddy: getProviderEmail(useWorkbuddyAccountStore, getWorkbuddyAccountDisplayEmail),
-    qoder: getProviderEmail(useQoderAccountStore, getQoderAccountDisplayEmail),
     zcode: getProviderEmail(useZcodeAccountStore, getZcodeAccountDisplayEmail),
     trae: getTraeProviderEmail('trae'),
     trae_solo: getTraeProviderEmail('trae_solo'),
@@ -245,9 +251,6 @@ export function useAutoRefresh() {
   const refreshAllWorkbuddyTokens = useWorkbuddyAccountStore((state) => state.refreshAllTokens);
   const fetchCurrentWorkbuddyAccountId = useWorkbuddyAccountStore((state) => state.fetchCurrentAccountId);
   const refreshWorkbuddyToken = useWorkbuddyAccountStore((state) => state.refreshToken);
-  const refreshAllQoderTokens = useQoderAccountStore((state) => state.refreshAllTokens);
-  const fetchCurrentQoderAccountId = useQoderAccountStore((state) => state.fetchCurrentAccountId);
-  const refreshQoderToken = useQoderAccountStore((state) => state.refreshToken);
   const refreshAllZcodeTokens = useZcodeAccountStore((state) => state.refreshAllTokens);
   const fetchCurrentZcodeAccountId = useZcodeAccountStore((state) => state.fetchCurrentAccountId);
   const refreshZcodeToken = useZcodeAccountStore((state) => state.refreshToken);
@@ -280,7 +283,12 @@ export function useAutoRefresh() {
   const workbuddyRefreshingRef = useRef(false);
   const workbuddyCurrentRefreshingRef = useRef(false);
   const qoderRefreshingRef = useRef(false);
-  const qoderCurrentRefreshingRef = useRef(false);
+  const qoderCurrentRefreshingRefs = useRef({
+    qoder: { current: false },
+    qoder_app: { current: false },
+    qoder_cn_ide: { current: false },
+    qoder_cn_app: { current: false },
+  });
   const zcodeRefreshingRef = useRef(false);
   const zcodeCurrentRefreshingRef = useRef(false);
   const traeRefreshingRef = useRef(false);
@@ -412,6 +420,12 @@ export function useAutoRefresh() {
 
           const currentRefreshMinutesMap = loadCurrentAccountRefreshMinutesMap();
           const currentAccountEmails = getCurrentAccountEmails();
+          if (config.qoder_auto_refresh_minutes > 0) {
+            await ensureQoderAccountsLoaded();
+          }
+          const qoderCurrentIds = config.qoder_auto_refresh_minutes > 0
+            ? await refreshQoderCurrentAccountIds(useQoderAccountStore.getState().accounts)
+            : useQoderCurrentAccountStore.getState().currentIds;
           const eligibleCodexQuotaAccount = createCodexAutomaticQuotaRefreshPredicate(config.codex_auto_refresh_plan_types);
           const runProviderCurrentRefresh = async (
             fetchCurrentProviderAccountId: () => Promise<string | null>,
@@ -447,6 +461,8 @@ export function useAutoRefresh() {
             await getCodexCustomQuotaRefreshAccountIdsByMinutes().catch(
               () => new Map<number, string[]>(),
             );
+
+          if (destroyedRef.current) return;
 
           const descriptors: PlatformRefreshDescriptor[] = [
             {
@@ -662,20 +678,28 @@ export function useAutoRefresh() {
                 );
               },
             },
-            {
-              key: 'qoder',
-              label: 'Qoder',
-              intervalMinutes: config.qoder_auto_refresh_minutes,
-              currentMinutes: resolveCurrentMinutes('qoder', currentAccountEmails.qoder, currentRefreshMinutesMap),
-              fullRefreshingRef: qoderRefreshingRef,
-              currentRefreshingRef: qoderCurrentRefreshingRef,
-              runFullRefresh: async () => {
-                await refreshAllQoderTokens();
-              },
-              runCurrentRefresh: async () => {
-                await runProviderCurrentRefresh(fetchCurrentQoderAccountId, refreshQoderToken);
-              },
-            },
+            ...QODER_VARIANT_IDS.map((variant): PlatformRefreshDescriptor => {
+              const currentAccount = useQoderAccountStore.getState().accounts
+                .find((account) => account.id === qoderCurrentIds[variant]);
+              return {
+                key: variant,
+                label: QODER_VARIANT_DISPLAY_NAMES[variant],
+                intervalMinutes: config.qoder_auto_refresh_minutes,
+                currentMinutes: resolveCurrentMinutes(
+                  'qoder',
+                  currentAccount ? getQoderAccountDisplayEmail(currentAccount) : null,
+                  currentRefreshMinutesMap,
+                ),
+                fullRefreshingRef: qoderRefreshingRef,
+                currentRefreshingRef: qoderCurrentRefreshingRefs.current[variant],
+                // 套件全量刷新只注册一次；当前账号任务按变体分别应用账号覆盖。
+                runFullRefresh: variant === 'qoder' ? refreshAllQoderVariants : undefined,
+                runCurrentRefresh: () => runProviderCurrentRefresh(
+                  () => getProviderCurrentAccountId(variant),
+                  (accountId) => useQoderAccountStore.getState().refreshToken(accountId, variant),
+                ),
+              };
+            }),
             {
               key: 'zcode',
               label: 'ZCode',
@@ -780,7 +804,8 @@ export function useAutoRefresh() {
 
           const tasks: AutoRefreshSchedulerTask[] = [];
           for (const descriptor of descriptors) {
-            if (descriptor.intervalMinutes > 0) {
+            const runFullRefresh = descriptor.runFullRefresh;
+            if (descriptor.intervalMinutes > 0 && runFullRefresh) {
               console.log(`[AutoRefresh] ${descriptor.label} 已启用: 每 ${descriptor.intervalMinutes} 分钟`);
               tasks.push({
                 key: `full:${descriptor.key}`,
@@ -789,12 +814,12 @@ export function useAutoRefresh() {
                 run: () =>
                   executeWithGuard(
                     descriptor.fullRefreshingRef,
-                    descriptor.runFullRefresh,
+                    runFullRefresh,
                     `[AutoRefresh] 触发 ${descriptor.label} 刷新...`,
                     `[AutoRefresh] ${descriptor.label} 刷新失败:`,
                   ),
               });
-            } else {
+            } else if (descriptor.intervalMinutes <= 0) {
               console.log(`[AutoRefresh] ${descriptor.label} 已禁用`);
             }
 
@@ -900,7 +925,6 @@ export function useAutoRefresh() {
     fetchCurrentGrokAccountId,
     fetchCurrentGhcpAccountId,
     fetchCurrentKiroAccountId,
-    fetchCurrentQoderAccountId,
     fetchCurrentZcodeAccountId,
     fetchTraeAccounts,
     fetchCurrentWindsurfAccountId,
@@ -915,7 +939,6 @@ export function useAutoRefresh() {
     refreshAllGhcpTokens,
     refreshAllKiroTokens,
     refreshAllQuotas,
-    refreshAllQoderTokens,
     refreshAllZcodeTokens,
     refreshAllWindsurfTokens,
     refreshAllWorkbuddyTokens,
@@ -927,7 +950,6 @@ export function useAutoRefresh() {
     refreshGrokToken,
     refreshGhcpToken,
     refreshKiroToken,
-    refreshQoderToken,
     refreshZcodeToken,
     refreshTraeToken,
     refreshWindsurfToken,
@@ -958,6 +980,11 @@ export function useAutoRefresh() {
     };
 
     window.addEventListener('config-updated', handleConfigUpdate);
+    const unsubscribeQoderCurrentAccounts = useQoderCurrentAccountStore.subscribe((state, previous) => {
+      if (!disposed && state.currentIds !== previous.currentIds) {
+        handleConfigUpdate();
+      }
+    });
     void listen(CURRENT_ACCOUNT_CHANGED_EVENT, handleConfigUpdate).then((unlisten) => {
       if (disposed) {
         unlisten();
@@ -974,6 +1001,7 @@ export function useAutoRefresh() {
         window.clearTimeout(startupTimer);
       }
       stopScheduler();
+      unsubscribeQoderCurrentAccounts();
       unlistenCurrentAccount?.();
       window.removeEventListener('config-updated', handleConfigUpdate);
     };

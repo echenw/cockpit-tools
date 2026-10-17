@@ -9,6 +9,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { parseAccountGroups, type AccountGroup } from './accountGroupService';
 import * as antigravityGroups from './accountGroupService';
 import * as codexGroups from './codexAccountGroupService';
+import { listQoderAccounts } from './qoderService';
+import { isQoderVariantId, qoderAccountSupportsVariant } from '../types/qoder';
 
 export type { AccountGroup };
 
@@ -71,19 +73,36 @@ async function saveToDisk(platform: string, groups: AccountGroup[]): Promise<voi
   }
 }
 
+async function resolveQoderGroupAccountIds(platform: string, groups: AccountGroup[]): Promise<AccountGroup[]> {
+  if (!isQoderVariantId(platform) || !groups.some((group) => group.accountIds.length > 0)) return groups;
+
+  const accounts = await listQoderAccounts();
+  // 现存 ID 优先；只解析同地区的旧 ID，未知引用保留。
+  const accountIds = new Map(accounts.map((account) => [account.id, account.id]));
+  for (const account of accounts) {
+    if (!qoderAccountSupportsVariant(account, platform)) continue;
+    for (const legacyId of account.legacy_ids ?? []) {
+      if (!accountIds.has(legacyId)) accountIds.set(legacyId, account.id);
+    }
+  }
+  return groups.map((group) => ({
+    ...group,
+    accountIds: Array.from(new Set(group.accountIds.map((id) => accountIds.get(id) ?? id))),
+  }));
+}
+
 async function loadGroupsInternal(platform: string): Promise<AccountGroup[]> {
   const key = normalizePlatform(platform);
   const cached = cacheByPlatform.get(key);
-  if (cached !== undefined) return cloneGroups(cached);
-
-  const groups = await loadFromDisk(key);
+  // 缓存分组也要按最新账号映射读取，覆盖后续发生的账号合并。
+  const groups = await resolveQoderGroupAccountIds(key, cached ?? await loadFromDisk(key));
   cacheByPlatform.set(key, groups);
   return cloneGroups(groups);
 }
 
 async function saveGroupsInternal(platform: string, groups: AccountGroup[]): Promise<void> {
   const key = normalizePlatform(platform);
-  const next = cloneGroups(groups);
+  const next = await resolveQoderGroupAccountIds(key, cloneGroups(groups));
   await saveToDisk(key, next);
   cacheByPlatform.set(key, next);
 }

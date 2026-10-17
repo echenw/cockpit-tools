@@ -2944,15 +2944,6 @@ pub fn run_quota_alert_if_needed() -> Result<(), String> {
     Ok(())
 }
 
-pub fn accounts_index_path_string() -> Result<String, String> {
-    Ok(get_accounts_index_path()?.to_string_lossy().to_string())
-}
-
-/// Existing single-client instance callers are migrated in the client workflow commit.
-pub fn inject_to_qoder_for_user_data_dir(user_data_dir: &str, account_id: &str) -> Result<(), String> {
-    inject_to_qoder_for_variant_user_data_dir(QoderVariantKind::Qoder, user_data_dir, account_id)
-}
-
 fn credentials_match(current: &QoderAccount, expected: &QoderAccount) -> bool {
     current.id == expected.id
         && current.user_id == expected.user_id
@@ -2995,10 +2986,6 @@ pub(crate) fn update_refresh_snapshot(
         user_info_raw: Some(user_info_raw), user_plan_raw, credit_usage_raw,
     }, Some(&existing));
     save_account_record_locked(account)
-}
-
-pub(crate) fn resolve_current_account_id(accounts: &[QoderAccount]) -> Option<String> {
-    resolve_current_account_id_for_variant(accounts, QoderVariantKind::Qoder)
 }
 
 #[cfg(test)]

@@ -1398,7 +1398,6 @@ pub fn run() {
             commands::qoder::refresh_all_qoder_tokens,
             commands::qoder::inject_qoder_account,
             commands::qoder::update_qoder_account_tags,
-            commands::qoder::get_qoder_accounts_index_path,
             // Zed Commands
             commands::zed::list_zed_accounts,
             commands::zed::delete_zed_account,
