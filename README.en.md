@@ -225,6 +225,9 @@ Manage CodeBuddy CN instances with isolated profiles and lifecycle controls.
 
 ### 11. Qoder Account Management
 
+- **Regional Accounts and Credentials**: international and CN accounts remain isolated. IDE and App share each regional identity by official user ID, with separate client AT/job credentials and current-account selections. Legacy merges keep encrypted backups and old IDs as aliases; missing user IDs never merge through an empty email.
+- **Authorization and Import**: OAuth device authorization, local import and JSON import route by region. The account owner stores one shared device RT, with client sessions maintained as projections. Running App auth files are not hot-written. Account-list IPC responses redact credentials. This snapshot has only been reviewed statically; native login and real-account migration remain unverified.
+
 - **Account Import**: supports local import and JSON import
 - **Quota View**: shows Credits usage, remaining credits, and raw plan values
 - **Batch Operations**: supports tags, filters, export, and batch delete/refresh

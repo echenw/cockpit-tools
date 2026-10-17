@@ -9,6 +9,7 @@ use crate::models::{DefaultInstanceSettings, InstanceProfile, InstanceStore};
 use crate::modules;
 use crate::modules::instance::InstanceDefaults;
 use crate::modules::instance_store;
+use crate::modules::qoder_variant::QoderVariantKind;
 
 pub use crate::modules::instance_store::{CreateInstanceParams, UpdateInstanceParams};
 
@@ -85,6 +86,28 @@ pub fn get_default_qoder_user_data_dir() -> Result<PathBuf, String> {
     {
         let home = dirs::home_dir().ok_or("无法获取用户主目录")?;
         return Ok(home.join(".config/Qoder"));
+    }
+
+    #[allow(unreachable_code)]
+    Err("Qoder 应用多开仅支持 macOS、Windows 和 Linux".to_string())
+}
+
+pub fn get_default_qoder_user_data_dir_for_variant(kind: QoderVariantKind) -> Result<PathBuf, String> {
+    use crate::modules::qoder_platform_paths as qpp;
+    #[cfg(target_os = "macos")]
+    {
+        let home = dirs::home_dir().ok_or("无法获取用户主目录")?;
+        return Ok(qpp::macos_data_dir_with_home(kind, &home));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return qpp::windows_data_dir(kind);
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        return qpp::linux_data_dir(kind);
     }
 
     #[allow(unreachable_code)]

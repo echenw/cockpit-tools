@@ -3,6 +3,7 @@ import { save } from '@tauri-apps/plugin-dialog';
 import { openPath } from '@tauri-apps/plugin-opener';
 import { invoke } from '@tauri-apps/api/core';
 import { presentWindowsOperationError } from '../utils/windowsOperationDialog';
+import { copyTextToClipboard } from '../utils/clipboard';
 
 interface UseExportJsonModalOptions {
   exportFilePrefix: string;
@@ -181,7 +182,7 @@ export function useExportJsonModal(options: UseExportJsonModalOptions): UseExpor
   const copyJson = useCallback(async () => {
     if (!jsonContent) return;
     try {
-      await navigator.clipboard.writeText(jsonContent);
+      await copyTextToClipboard(jsonContent);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1200);
     } catch (error) {
@@ -228,7 +229,7 @@ export function useExportJsonModal(options: UseExportJsonModalOptions): UseExpor
   const copySavedPath = useCallback(async () => {
     if (!savedPath) return;
     try {
-      await navigator.clipboard.writeText(savedPath);
+      await copyTextToClipboard(savedPath);
       setPathCopied(true);
       window.setTimeout(() => setPathCopied(false), 1200);
     } catch (error) {

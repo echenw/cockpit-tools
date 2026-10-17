@@ -344,6 +344,15 @@ pub struct UserConfig {
     /// Qoder 启动路径（为空则使用默认路径）
     #[serde(default = "default_qoder_app_path")]
     pub qoder_app_path: String,
+    /// Qoder App 变体启动路径（为空则使用默认路径）
+    #[serde(default = "default_qoder_app_variant_path")]
+    pub qoder_app_variant_path: String,
+    /// Qoder CN IDE 变体启动路径（为空则使用默认路径）
+    #[serde(default = "default_qoder_cn_ide_app_path")]
+    pub qoder_cn_ide_app_path: String,
+    /// Qoder CN App 变体启动路径（为空则使用默认路径）
+    #[serde(default = "default_qoder_cn_app_path")]
+    pub qoder_cn_app_path: String,
     /// ZCode 启动路径（为空则使用默认路径）
     #[serde(default = "default_zcode_app_path")]
     pub zcode_app_path: String,
@@ -989,6 +998,15 @@ fn default_codebuddy_cn_share_sessions_on_switch() -> bool {
 fn default_qoder_app_path() -> String {
     String::new()
 }
+fn default_qoder_app_variant_path() -> String {
+    String::new()
+}
+fn default_qoder_cn_ide_app_path() -> String {
+    String::new()
+}
+fn default_qoder_cn_app_path() -> String {
+    String::new()
+}
 fn default_zcode_app_path() -> String {
     String::new()
 }
@@ -1297,6 +1315,9 @@ impl Default for UserConfig {
             codebuddy_cn_app_path: default_codebuddy_cn_app_path(),
             codebuddy_cn_share_sessions_on_switch: default_codebuddy_cn_share_sessions_on_switch(),
             qoder_app_path: default_qoder_app_path(),
+            qoder_app_variant_path: default_qoder_app_variant_path(),
+            qoder_cn_ide_app_path: default_qoder_cn_ide_app_path(),
+            qoder_cn_app_path: default_qoder_cn_app_path(),
             zcode_app_path: default_zcode_app_path(),
             trae_app_path: default_trae_app_path(),
             trae_solo_app_path: default_trae_app_path(),

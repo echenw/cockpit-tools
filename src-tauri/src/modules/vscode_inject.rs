@@ -62,6 +62,9 @@ enum SafeStorageReadMode {
     CodeBuddyOnly,
     CodeBuddyCnOnly,
     QoderOnly,
+    QoderCnOnly,
+    QoderAppOnly,
+    QoderCnAppOnly,
     WorkBuddyOnly,
 }
 
@@ -415,6 +418,61 @@ fn build_macos_safe_storage_candidates(
         ];
     }
 
+    // CN/App 变体服务名（与各客户端落盘命名一致）。
+    if matches!(mode, SafeStorageReadMode::QoderCnOnly) {
+        return vec![
+            (
+                "Qoder CN Safe Storage".to_string(),
+                Some("Qoder CN".to_string()),
+            ),
+            (
+                "Qoder CN Safe Storage".to_string(),
+                Some("qodercn".to_string()),
+            ),
+            ("Qoder CN Safe Storage".to_string(), None),
+            (
+                "Qoder CN Safe Storage".to_string(),
+                Some("Qoder CN Safe Storage".to_string()),
+            ),
+        ];
+    }
+
+    if matches!(mode, SafeStorageReadMode::QoderAppOnly) {
+        return vec![
+            (
+                "Qoder App Safe Storage".to_string(),
+                Some("Qoder".to_string()),
+            ),
+            (
+                "Qoder App Safe Storage".to_string(),
+                Some("qoder".to_string()),
+            ),
+            ("Qoder App Safe Storage".to_string(), None),
+            (
+                "Qoder App Safe Storage".to_string(),
+                Some("Qoder App Safe Storage".to_string()),
+            ),
+        ];
+    }
+
+    if matches!(mode, SafeStorageReadMode::QoderCnAppOnly) {
+        return vec![
+            (
+                "Qoder CN App Safe Storage".to_string(),
+                Some("Qoder CN".to_string()),
+            ),
+            (
+                "Qoder CN App Safe Storage".to_string(),
+                Some("qodercn".to_string()),
+            ),
+            ("Qoder CN App Safe Storage".to_string(), None),
+            (
+                "Qoder CN App Safe Storage".to_string(),
+                Some("Qoder CN App Safe Storage".to_string()),
+            ),
+        ];
+    }
+
     if matches!(mode, SafeStorageReadMode::WorkBuddyOnly) {
         return vec![
             (
@@ -539,6 +597,9 @@ fn get_linux_v11_key(mode: SafeStorageReadMode) -> Option<[u8; 16]> {
             "codebuddycn",
         ],
         SafeStorageReadMode::QoderOnly => &["Qoder", "qoder"],
+        SafeStorageReadMode::QoderCnOnly => &["Qoder CN", "qoder-cn"],
+        SafeStorageReadMode::QoderAppOnly => &["Qoder App", "qoder-app"],
+        SafeStorageReadMode::QoderCnAppOnly => &["Qoder CN App", "qoder-cn-app"],
         SafeStorageReadMode::WorkBuddyOnly => {
             &["WorkBuddy", "workbuddy", "workbuddy-cn", "workbuddycn"]
         }
@@ -1106,6 +1167,13 @@ pub fn read_qoder_secret_storage_value_by_db_path(
     read_secret_storage_value_by_db_path_and_mode(db_path, db_key, SafeStorageReadMode::QoderOnly)
 }
 
+pub fn read_qoder_cn_secret_storage_value_by_db_path(
+    db_path: &Path,
+    db_key: &str,
+) -> Result<Option<String>, String> {
+    read_secret_storage_value_by_db_path_and_mode(db_path, db_key, SafeStorageReadMode::QoderCnOnly)
+}
+
 fn load_existing_sessions(
     existing_encrypted_value: Option<&str>,
     data_root: Option<&Path>,
@@ -1245,6 +1313,52 @@ pub fn inject_secret_to_state_db_for_qoder(
     plaintext: &str,
 ) -> Result<(), String> {
     inject_secret_to_state_db_with_mode(db_path, db_key, plaintext, SafeStorageReadMode::QoderOnly)
+}
+
+pub fn inject_secret_to_state_db_for_qoder_cn(
+    db_path: &std::path::Path,
+    db_key: &str,
+    plaintext: &str,
+) -> Result<(), String> {
+    inject_secret_to_state_db_with_mode(
+        db_path,
+        db_key,
+        plaintext,
+        SafeStorageReadMode::QoderCnOnly,
+    )
+}
+
+/// App 系（`auth.v1.dat`）是 Electron safeStorage 原文（`v10` 前缀裸字节），
+/// 与 state.vscdb 的 Buffer-JSON 包装不同，直接走 payload 解密。
+/// `data_root` = App 的 userData（Windows 由它定位 Local State；macOS 仅用于候选名）。
+pub fn decrypt_qoder_app_auth_payload(
+    bytes: &[u8],
+    data_root: Option<&Path>,
+    cn_app: bool,
+) -> Result<Vec<u8>, String> {
+    let mode = if cn_app {
+        SafeStorageReadMode::QoderCnAppOnly
+    } else {
+        SafeStorageReadMode::QoderAppOnly
+    };
+    decrypt_secret_payload_with_mode(bytes, data_root, mode)
+}
+
+/// App 系（`auth.v1.dat`）写回：把 `{schemaVersion, token, refreshToken, ...}` 明文编码为
+/// Electron safeStorage 原文（`v10` 前缀裸字节，无 state.vscdb 的 Buffer-JSON 包装），
+/// 与 `decrypt_qoder_app_auth_payload` 严格对称。
+/// macOS = PBKDF2-SHA1(Keychain 口令, salt=`saltysalt`, 1003) + AES-128-CBC + 16 空格 IV。
+pub fn encrypt_qoder_app_auth_payload(
+    plaintext: &[u8],
+    data_root: Option<&Path>,
+    cn_app: bool,
+) -> Result<Vec<u8>, String> {
+    let mode = if cn_app {
+        SafeStorageReadMode::QoderCnAppOnly
+    } else {
+        SafeStorageReadMode::QoderAppOnly
+    };
+    encrypt_secret_payload_with_mode(plaintext, None, data_root, mode)
 }
 
 pub fn inject_secret_to_state_db_for_workbuddy(
