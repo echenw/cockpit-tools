@@ -170,6 +170,8 @@ Gerencie instâncias do CodeBuddy CN com perfis isolados e controles de ciclo de
 
 ### 10. Gerenciamento de Contas do Qoder
 
+- **Contas por região**: contas internacionais e CN permanecem separadas. IDE e App compartilham a identidade regional, com credenciais e seleção atual por cliente. A união de registros antigos preserva backups criptografados e aliases dos IDs anteriores. Migração real e login completo ainda não foram verificados nesta revisão estática.
+
 - **Importação de Contas**: suporta importação local e importação JSON
 - **Visualização de Cotas**: mostra o uso de créditos, créditos restantes e valores brutos do plano
 - **Operações em Lote**: suporta tags, filtros, exportação e exclusão/atualização em lote

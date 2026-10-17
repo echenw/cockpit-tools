@@ -388,6 +388,9 @@ fn normalize_platform_id(value: &str) -> Option<String> {
         "codebuddy" => Some("codebuddy".to_string()),
         "codebuddy-cn" => Some("codebuddy_cn".to_string()),
         "qoder" => Some("qoder".to_string()),
+        "qoder-app" => Some("qoder_app".to_string()),
+        "qoder-cn-ide" => Some("qoder_cn_ide".to_string()),
+        "qoder-cn-app" => Some("qoder_cn_app".to_string()),
         "zcode" => Some("zcode".to_string()),
         "trae" => Some("trae".to_string()),
         "trae-solo" => Some("trae_solo".to_string()),
@@ -645,6 +648,22 @@ mod tests {
         assert_eq!(
             effective_update_prompt_mode(Some(&policy), "windows", "1.1.3"),
             UPDATE_PROMPT_MODE_NORMAL
+        );
+    }
+
+    #[test]
+    fn qoder_variant_platform_ids_normalize_consistently() {
+        assert_eq!(
+            normalize_platform_id("qoder_app").as_deref(),
+            Some("qoder_app")
+        );
+        assert_eq!(
+            normalize_platform_id("qoder-cn-ide").as_deref(),
+            Some("qoder_cn_ide")
+        );
+        assert_eq!(
+            normalize_platform_id("Qoder-CN-App").as_deref(),
+            Some("qoder_cn_app")
         );
     }
 }

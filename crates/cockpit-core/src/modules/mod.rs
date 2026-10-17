@@ -49,7 +49,6 @@ pub mod oauth_pending_state;
 pub mod process;
 pub mod qoder_account;
 pub mod qoder_instance;
-pub mod qoder_oauth;
 pub mod quota;
 pub mod quota_cache;
 // pub mod sync_settings;

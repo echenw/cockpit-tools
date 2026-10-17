@@ -15,7 +15,7 @@ use crate::models::workbuddy::WorkbuddyOAuthCompletePayload;
 use crate::modules::{
     claude_account, codebuddy_account, codebuddy_cn_account, codebuddy_cn_oauth, codebuddy_oauth,
     codex_account, config, cursor_account, github_copilot_account, github_copilot_instance, import,
-    kiro_account, kiro_oauth, logger, qoder_account, trae_account, windsurf_account,
+    kiro_account, kiro_oauth, logger, qoder_account, qoder_variant, trae_account, windsurf_account,
     windsurf_oauth, workbuddy_account, workbuddy_oauth, zed_account,
 };
 use serde::Serialize;
@@ -274,27 +274,10 @@ fn peek_workbuddy_identity() -> Option<String> {
     ])
 }
 
-fn peek_qoder_identity() -> Option<String> {
-    let db_path = qoder_account::get_default_qoder_state_db_path()?;
-    if !db_path.exists() {
-        return None;
-    }
-    let user_info = crate::modules::vscode_inject::read_qoder_secret_storage_value_by_db_path(
-        &db_path,
-        "secret://aicoding.auth.userInfo",
-    )
-    .ok()
-    .flatten()?;
-    let parsed: Value = serde_json::from_str(&user_info).unwrap_or(Value::String(user_info));
-    let email = parsed
-        .get("email")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let user_id = parsed
-        .get("id")
-        .or_else(|| parsed.get("userId"))
-        .and_then(Value::as_str)
-        .map(str::to_string);
+fn peek_qoder_identity(kind: qoder_variant::QoderVariantKind) -> Option<String> {
+    let (email, user_id) = qoder_account::peek_local_identity_for_variant(kind.provider_key())
+        .ok()
+        .flatten()?;
     identity_key(&[email, user_id])
 }
 
@@ -531,11 +514,14 @@ fn import_workbuddy() -> ImportFuture {
     })
 }
 
-fn import_qoder() -> ImportFuture {
-    Box::pin(async {
-        qoder_account::import_from_local()
-            .map(|account| account.is_some())
-            .map_err(|error| error.to_string())
+fn import_qoder(kind: qoder_variant::QoderVariantKind) -> ImportFuture {
+    Box::pin(async move {
+        tauri::async_runtime::spawn_blocking(move || {
+            qoder_account::import_from_local_for_variant(kind.provider_key())
+        })
+        .await
+        .map_err(|error| format!("Qoder 本地导入任务失败: {error}"))?
+        .map(|account| account.is_some())
     })
 }
 
@@ -609,8 +595,23 @@ fn platform_watchers() -> Vec<PlatformWatcher> {
         },
         PlatformWatcher {
             platform: "qoder",
-            peek_identity: peek_qoder_identity,
-            import_account: import_qoder,
+            peek_identity: || peek_qoder_identity(qoder_variant::QoderVariantKind::Qoder),
+            import_account: || import_qoder(qoder_variant::QoderVariantKind::Qoder),
+        },
+        PlatformWatcher {
+            platform: "qoder_app",
+            peek_identity: || peek_qoder_identity(qoder_variant::QoderVariantKind::QoderApp),
+            import_account: || import_qoder(qoder_variant::QoderVariantKind::QoderApp),
+        },
+        PlatformWatcher {
+            platform: "qoder_cn_ide",
+            peek_identity: || peek_qoder_identity(qoder_variant::QoderVariantKind::QoderCnIde),
+            import_account: || import_qoder(qoder_variant::QoderVariantKind::QoderCnIde),
+        },
+        PlatformWatcher {
+            platform: "qoder_cn_app",
+            peek_identity: || peek_qoder_identity(qoder_variant::QoderVariantKind::QoderCnApp),
+            import_account: || import_qoder(qoder_variant::QoderVariantKind::QoderCnApp),
         },
         PlatformWatcher {
             platform: "trae",
@@ -800,7 +801,7 @@ async fn run_watch_cycle_with_mode(
 
 #[cfg(test)]
 mod tests {
-    use super::identity_key;
+    use super::*;
 
     #[test]
     fn identity_key_joins_non_empty_parts() {
@@ -813,5 +814,27 @@ mod tests {
     #[test]
     fn identity_key_returns_none_for_empty_parts() {
         assert_eq!(identity_key(&[None, Some("".to_string())]), None);
+    }
+
+    #[test]
+    fn platform_watchers_include_all_qoder_variants() {
+        let watchers = platform_watchers();
+        let names: Vec<&str> = watchers.iter().map(|watcher| watcher.platform).collect();
+        for expected in ["qoder", "qoder_app", "qoder_cn_ide", "qoder_cn_app"] {
+            assert!(
+                names.contains(&expected),
+                "missing qoder variant watcher: {expected} in {names:?}"
+            );
+        }
+        assert_eq!(
+            names.iter().filter(|name| **name == "qoder").count(),
+            1,
+            "default qoder watcher must stay a single entry"
+        );
+        assert_eq!(
+            watchers.len(),
+            19,
+            "only the three qoder variant targets were added: {names:?}"
+        );
     }
 }

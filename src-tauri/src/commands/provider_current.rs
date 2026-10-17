@@ -26,11 +26,17 @@ fn resolve_provider_current_account_id(platform: &str) -> Result<Option<String>,
             let accounts = crate::modules::codebuddy_cn_account::list_accounts();
             Ok(crate::modules::codebuddy_cn_account::resolve_current_account_id(&accounts))
         }
-        "qoder" => {
+        "qoder" | "qoder_app" | "qoder-app" | "qoder_cn_ide" | "qoder-cn-ide" | "qoder_cn_app"
+        | "qoder-cn-app" => {
+            // 四变体共享同一账号存储，但当前账号映射按变体 provider_key 分桶存储；
+            // 按请求变体解析对应桶，避免非默认变体读取默认 `qoder` 桶。
+            let variant = crate::modules::qoder_variant::QoderVariantKind::parse(Some(platform))?;
             let accounts = crate::modules::qoder_account::list_accounts();
-            Ok(crate::modules::qoder_account::resolve_current_account_id(
-                &accounts,
-            ))
+            Ok(
+                crate::modules::qoder_account::resolve_current_account_id_for_variant(
+                    &accounts, variant,
+                ),
+            )
         }
         "trae" | "trae_solo" | "trae-solo" | "trae_cn" | "trae-cn" | "trae_solo_cn"
         | "trae-solo-cn" => {
@@ -119,6 +125,9 @@ mod tests {
             "codebuddy_cn",
             "codebuddy-cn",
             "qoder",
+            "qoder_app",
+            "qoder_cn_ide",
+            "qoder_cn_app",
             "trae",
             "trae_solo",
             "trae_cn",

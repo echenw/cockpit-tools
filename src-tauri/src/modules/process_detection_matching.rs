@@ -478,25 +478,6 @@ fn resolve_expected_codebuddy_cn_launch_path_for_match() -> Option<String> {
     Some(normalized)
 }
 
-fn resolve_expected_qoder_launch_path_for_match() -> Option<String> {
-    let launch_path = match resolve_qoder_launch_path() {
-        Ok(path) => path,
-        Err(err) => {
-            crate::modules::logger::log_warn(&format!(
-                "[Qoder Resolve] launch path missing or invalid, skip PID match: {}",
-                err
-            ));
-            return None;
-        }
-    };
-    let normalized = normalize_path_for_compare(launch_path.to_string_lossy().as_ref());
-    if normalized.is_empty() {
-        crate::modules::logger::log_warn("[Qoder Resolve] launch path is empty, skip PID match");
-        return None;
-    }
-    Some(normalized)
-}
-
 fn resolve_expected_trae_launch_path_for_platform_match(
     platform: crate::modules::trae_account::TraePlatformKind,
 ) -> Option<String> {
@@ -1272,14 +1253,6 @@ fn resolve_codebuddy_cn_target_and_fallback(user_data_dir: Option<&str>) -> Opti
     )
 }
 
-fn resolve_qoder_target_and_fallback(user_data_dir: Option<&str>) -> Option<(String, bool)> {
-    build_user_data_dir_match_target(
-        user_data_dir,
-        get_default_qoder_user_data_dir_for_os(),
-        !strict_process_detect_enabled(),
-    )
-}
-
 fn resolve_trae_target_and_fallback(user_data_dir: Option<&str>) -> Option<(String, bool)> {
     resolve_trae_target_and_fallback_for_platform(
         user_data_dir,
@@ -1480,50 +1453,6 @@ fn resolve_codex_windows_target_and_fallback(codex_home: Option<&str>) -> Option
 }
 
 #[cfg(target_os = "macos")]
-fn is_qoder_macos_main_process_command_line(cmdline: &str) -> bool {
-    let lower = cmdline.to_lowercase();
-    if lower.contains("crashpad_handler") || is_helper_command_line(&lower) {
-        return false;
-    }
-    lower.contains("/qoder ide.app/contents/macos/qoder")
-        || lower.contains("/qoder.app/contents/macos/qoder")
-}
-
-#[cfg(target_os = "macos")]
-fn collect_qoder_process_entries_macos() -> Vec<(u32, Option<String>)> {
-    let mut entries = Vec::new();
-    let output = Command::new("ps").args(["-axo", "pid,command"]).output();
-    if let Ok(output) = output {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines().skip(1) {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            let mut parts = line.splitn(2, |ch: char| ch.is_whitespace());
-            let pid_str = parts.next().unwrap_or("").trim();
-            let cmdline = parts.next().unwrap_or("").trim();
-            let pid = match pid_str.parse::<u32>() {
-                Ok(value) => value,
-                Err(_) => continue,
-            };
-            // Qoder's current macOS bundle is named `Qoder IDE.app`, while
-            // older builds used `Qoder.app`. The main Electron process does
-            // not expose `--user-data-dir`, so it must still be collected and
-            // matched to the configured default profile via the `None`
-            // fallback. Match the executable segment, not just the bundle
-            // name, so helpers under `Contents/Frameworks` are excluded.
-            if !is_qoder_macos_main_process_command_line(cmdline) {
-                continue;
-            }
-            let dir = extract_user_data_dir_from_command_line(cmdline);
-            entries.push((pid, dir));
-        }
-    }
-    entries
-}
-
-#[cfg(target_os = "macos")]
 fn collect_trae_process_entries_macos_for_platform(
     platform: crate::modules::trae_account::TraePlatformKind,
 ) -> Vec<(u32, Option<String>)> {
@@ -1562,18 +1491,302 @@ fn collect_trae_process_entries_macos_for_platform(
     entries
 }
 
-pub fn resolve_qoder_pid_from_entries(
+// ---- Qoder 变体客户端进程（变体切号后关闭/启动对应客户端）----
+// 变体路径按平台表及实际可执行路径匹配，避免误伤其他变体。
+
+/// 变体客户端 bundle 进程命令行标记（纯函数，小写）。
+#[cfg(target_os = "macos")]
+fn qoder_variant_main_process_marker(
+    kind: crate::modules::qoder_variant::QoderVariantKind,
+) -> String {
+    format!(
+        "/{}/contents/macos/",
+        crate::modules::qoder_platform_paths::qoder_platform_table(kind)
+            .macos_app_bundle
+            .to_ascii_lowercase()
+    )
+}
+
+/// macOS 变体主进程命令行判定（纯函数；排除 helper/crashpad）。
+#[cfg(target_os = "macos")]
+fn is_qoder_variant_main_process_command_line(
+    kind: crate::modules::qoder_variant::QoderVariantKind,
+    cmdline: &str,
+) -> bool {
+    let lower = cmdline.to_lowercase();
+    if lower.contains("crashpad_handler") || is_helper_command_line(&lower) {
+        return false;
+    }
+    lower.contains(&qoder_variant_main_process_marker(kind))
+}
+
+#[cfg(target_os = "macos")]
+fn collect_qoder_process_entries_macos_for_variant(
+    kind: crate::modules::qoder_variant::QoderVariantKind,
+    expected_launch: &str,
+) -> Result<Vec<(u32, Option<String>)>, String> {
+    // One complete ps snapshot supplies both the executable identity and
+    // the user-data-dir. A second, best-effort ps pass could silently discard
+    // all entries when it fails after the first pass succeeded.
+    parse_qoder_macos_process_snapshot(
+        kind,
+        expected_launch,
+        Command::new("ps").args(["-axww", "-o", "pid=,command="]).output(),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn parse_qoder_macos_process_snapshot(
+    kind: crate::modules::qoder_variant::QoderVariantKind,
+    expected_launch: &str,
+    output: std::io::Result<std::process::Output>,
+) -> Result<Vec<(u32, Option<String>)>, String> {
+    let output = output.map_err(|err| format!("{} ps 进程枚举失败: {err}", kind.display_name()))?;
+    if !output.status.success() {
+        return Err(format!(
+            "{} ps 进程枚举失败: status={}, stderr={}",
+            kind.display_name(),
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim(),
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if stdout.trim().is_empty() {
+        return Err(format!("{} ps 进程枚举返回空快照，无法确认客户端已退出", kind.display_name()));
+    }
+    let expected = normalize_path_for_compare(expected_launch);
+    let expected_root = normalize_macos_app_root(Path::new(expected_launch))
+        .map(|root| normalize_path_for_compare(&root));
+    let mut entries = Vec::new();
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.splitn(2, |ch: char| ch.is_whitespace());
+        let pid_str = parts.next().unwrap_or("").trim();
+        let cmdline = parts.next().unwrap_or("").trim();
+        if !is_qoder_variant_main_process_command_line(kind, cmdline) {
+            continue;
+        }
+        let pid = pid_str.parse::<u32>().map_err(|err| {
+            format!("{} ps 主进程 PID 不可解析: {err}", kind.display_name())
+        })?;
+        let exe_path = extract_macos_exe_from_cmdline(cmdline)
+            .ok_or_else(|| format!("{} ps 主进程路径不可解析: pid={pid}", kind.display_name()))?;
+        let normalized = normalize_path_for_compare(&exe_path);
+        let root = normalize_macos_app_root(Path::new(&exe_path))
+            .map(|value| normalize_path_for_compare(&value));
+        let same_bundle = expected_root.as_ref().is_some_and(|expected| root.as_ref() == Some(expected));
+        if normalized != expected && !same_bundle {
+            continue;
+        }
+        entries.push((pid, extract_user_data_dir_from_command_line(cmdline)));
+    }
+    Ok(entries)
+}
+
+/// 严格进程快照：无法确认运行状态时必须报错，不能把探测失败当作进程已退出。
+pub(crate) fn collect_qoder_process_entries_for_variant_checked(
+    kind: crate::modules::qoder_variant::QoderVariantKind,
+) -> Result<Vec<(u32, Option<String>)>, String> {
+    let expected_launch = resolve_qoder_variant_launch_path(kind)
+        .map(|path| normalize_path_for_compare(&path.to_string_lossy()))?;
+    if expected_launch.is_empty() {
+        return Err(format!("{} 进程探测缺少有效启动路径", kind.display_name()));
+    }
+    let expected_launch = Some(expected_launch);
+    #[cfg(target_os = "macos")]
+    {
+        return collect_qoder_process_entries_macos_for_variant(
+            kind,
+            expected_launch.as_deref().expect("launch path checked above"),
+        );
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let table = crate::modules::qoder_platform_paths::qoder_platform_table(kind);
+        let process_name = table
+            .windows_exes
+            .first()
+            .copied()
+            .unwrap_or("Qoder.exe");
+        let Some(expected_process) = resolve_qoder_windows_main_process_path(
+            kind,
+            process_name,
+            expected_launch.as_deref().expect("launch path checked above"),
+        ) else {
+            crate::modules::logger::log_warn(&format!(
+                "[{} Resolve] 无法从启动路径解析主进程路径，跳过 PID 匹配",
+                kind.display_name()
+            ));
+            return Err(format!("{} 无法解析 Windows 主进程路径", kind.display_name()));
+        };
+        let probe = collect_named_electron_process_entries_from_sysinfo_fallback(
+            &expected_process,
+            "qoder",
+            process_name,
+            kind.display_name(),
+            true,
+        );
+        // A complete native snapshot can confirm absence without starting PowerShell.
+        // Keep the fallback when the snapshot is unavailable or an executable cannot be read.
+        if !probe.needs_powershell {
+            return Ok(probe.entries);
+        }
+        let fallback = collect_named_electron_process_entries_from_powershell_checked(
+            &expected_process,
+            process_name,
+            kind.display_name(),
+            true,
+        )?;
+        return merge_qoder_windows_process_probes(probe, fallback);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        return collect_qoder_process_entries_from_proc_root_checked(
+            Path::new("/proc"),
+            expected_launch.as_deref().expect("launch path checked above"),
+        );
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        let _ = (kind, expected_launch);
+        Ok(Vec::new())
+    }
+}
+
+/// Legacy display/status consumers can continue to use best-effort snapshots.
+/// Account mutation and process shutdown MUST call the checked variant.
+pub fn collect_qoder_process_entries_for_variant(
+    kind: crate::modules::qoder_variant::QoderVariantKind,
+) -> Vec<(u32, Option<String>)> {
+    match collect_qoder_process_entries_for_variant_checked(kind) {
+        Ok(entries) => entries,
+        Err(error) => {
+            crate::modules::logger::log_warn(&format!(
+                "[{} Probe] 不可靠的进程快照，展示端忽略: {}",
+                kind.display_name(), error,
+            ));
+            Vec::new()
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_qoder_windows_main_process_path(
+    kind: crate::modules::qoder_variant::QoderVariantKind,
+    process_name: &str,
+    launch_path: &str,
+) -> Option<String> {
+    let launch = Path::new(launch_path);
+    let launch_name = launch.file_name().and_then(|name| name.to_str());
+    let process_path = if launch_name
+        .is_some_and(|name| name.eq_ignore_ascii_case(process_name))
+    {
+        launch.to_path_buf()
+    } else {
+        let parent = launch.parent()?;
+        let sibling = parent.join(process_name);
+        if sibling.is_file() {
+            sibling
+        } else if let Some(resolved_from_ini) =
+            crate::modules::qoder_platform_paths::resolve_qoder_exe_from_launcher_ini(
+                parent,
+                kind,
+            )
+        {
+            resolved_from_ini
+        } else {
+            sibling
+        }
+    };
+    let normalized = normalize_path_for_compare(&process_path.to_string_lossy());
+    (!normalized.is_empty()).then_some(normalized)
+}
+
+/// 变体客户端默认 userData 目录（读平台表 + 真实环境；纯数据源复用 qoder_platform_paths）。
+pub fn qoder_variant_default_user_data_dir(
+    kind: crate::modules::qoder_variant::QoderVariantKind,
+) -> Option<String> {
+    use crate::modules::qoder_platform_paths as qpp;
+    #[cfg(target_os = "macos")]
+    {
+        let home = dirs::home_dir()?;
+        Some(
+            qpp::macos_data_dir_with_home(kind, &home)
+                .to_string_lossy()
+                .to_string(),
+        )
+    }
+    #[cfg(target_os = "windows")]
+    {
+        qpp::windows_data_dir(kind)
+            .ok()
+            .map(|path| path.to_string_lossy().to_string())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        qpp::linux_data_dir(kind)
+            .ok()
+            .map(|path| path.to_string_lossy().to_string())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        let _ = kind;
+        None
+    }
+}
+
+fn resolve_qoder_target_and_fallback_for_variant(
+    kind: crate::modules::qoder_variant::QoderVariantKind,
+    user_data_dir: Option<&str>,
+) -> Option<(String, bool)> {
+    build_user_data_dir_match_target(
+        user_data_dir,
+        qoder_variant_default_user_data_dir(kind),
+        !strict_process_detect_enabled(),
+    )
+}
+
+fn resolve_qoder_pid_for_variant_from_entries(
+    kind: crate::modules::qoder_variant::QoderVariantKind,
     last_pid: Option<u32>,
     user_data_dir: Option<&str>,
     entries: &[(u32, Option<String>)],
 ) -> Option<u32> {
-    let (target, allow_none_for_target) = resolve_qoder_target_and_fallback(user_data_dir)?;
+    let (target, allow_none_for_target) =
+        resolve_qoder_target_and_fallback_for_variant(kind, user_data_dir)?;
     resolve_pid_from_entries_by_user_data_dir(last_pid, &target, allow_none_for_target, entries)
 }
 
-pub fn resolve_qoder_pid(last_pid: Option<u32>, user_data_dir: Option<&str>) -> Option<u32> {
-    let entries = collect_qoder_process_entries();
-    resolve_qoder_pid_from_entries(last_pid, user_data_dir, &entries)
+/// 变体客户端主进程 PID 解析（按变体 bundle 枚举 + 变体 userData 目标）。
+/// Mutation-sensitive callers must propagate probe failures rather than assuming exit.
+pub(crate) fn resolve_qoder_pid_for_variant_checked(
+    kind: crate::modules::qoder_variant::QoderVariantKind,
+    last_pid: Option<u32>,
+    user_data_dir: Option<&str>,
+) -> Result<Option<u32>, String> {
+    let entries = collect_qoder_process_entries_for_variant_checked(kind)?;
+    Ok(resolve_qoder_pid_for_variant_from_entries(
+        kind, last_pid, user_data_dir, &entries,
+    ))
+}
+
+pub fn resolve_qoder_pid_for_variant(
+    kind: crate::modules::qoder_variant::QoderVariantKind,
+    last_pid: Option<u32>,
+    user_data_dir: Option<&str>,
+) -> Option<u32> {
+    match resolve_qoder_pid_for_variant_checked(kind, last_pid, user_data_dir) {
+        Ok(pid) => pid,
+        Err(error) => {
+            crate::modules::logger::log_warn(&format!(
+                "[{} Probe] 查询 PID 失败: {}", kind.display_name(), error,
+            ));
+            None
+        }
+    }
 }
 
 pub fn resolve_trae_pid_from_entries(
@@ -2619,40 +2832,44 @@ fn collect_workbuddy_process_entries_from_sysinfo_fallback(
 }
 
 #[cfg(target_os = "windows")]
-fn collect_named_electron_process_entries_from_powershell(
+fn collect_named_electron_process_entries_from_powershell_checked(
     expected_exe_path: &str,
     fallback_process_name: &str,
     log_prefix: &str,
-) -> Vec<(u32, Option<String>)> {
+    strict: bool,
+) -> Result<WindowsElectronProcessProbe, String> {
     let mut entries = Vec::new();
+    let mut unresolved_pids = Vec::new();
     let process_name = Path::new(expected_exe_path)
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or(fallback_process_name);
     let script = build_windows_path_filtered_process_probe_script(process_name, expected_exe_path);
+    // Qoder needs a confirmed profile before changing credentials or closing a process.
+    // Other consumers retain the existing best-effort query and five-second timeout.
+    let (script, timeout) = if strict {
+        (format!("$ErrorActionPreference='Stop';\n{script}"), Duration::from_secs(12))
+    } else {
+        (script, WINDOWS_PROCESS_PROBE_TIMEOUT)
+    };
     let output = powershell_output_with_timeout(
         &["-NoProfile", "-Command", &script],
-        WINDOWS_PROCESS_PROBE_TIMEOUT,
+        timeout,
     );
     let output = match output {
         Ok(value) => value,
         Err(err) => {
-            crate::modules::logger::log_warn(&format!(
-                "[{} Probe] PowerShell process probe failed: {}",
-                log_prefix, err
+            return Err(format!(
+                "{} PowerShell 进程探测失败: {}", log_prefix, err
             ));
-            return entries;
         }
     };
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        crate::modules::logger::log_warn(&format!(
-            "[{} Probe] PowerShell process probe returned non-zero: {}, stderr={}",
-            log_prefix,
-            output.status,
-            stderr.trim()
+        return Err(format!(
+            "{} PowerShell 进程探测失败: {}, stderr={}",
+            log_prefix, output.status, stderr.trim()
         ));
-        return entries;
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     for line in stdout.lines() {
@@ -2667,6 +2884,12 @@ fn collect_named_electron_process_entries_from_powershell(
             Ok(value) => value,
             Err(_) => continue,
         };
+        // Empty command lines are NOT proof of a default-profile instance.
+        // Some Windows processes expose their executable but deny command-line access.
+        if strict && cmdline.is_empty() {
+            unresolved_pids.push(pid);
+            continue;
+        }
         let lower = cmdline.to_lowercase();
         if is_helper_command_line(&lower) || lower.contains("crashpad_handler") {
             continue;
@@ -2683,7 +2906,67 @@ fn collect_named_electron_process_entries_from_powershell(
     }
     entries.sort_by_key(|(pid, _)| *pid);
     entries.dedup_by(|a, b| a.0 == b.0);
-    entries
+    Ok(WindowsElectronProcessProbe {
+        entries, unresolved_pids, needs_powershell: false,
+    })
+}
+
+/// Existing consumers retain their best-effort process list, including unreadable profiles.
+#[cfg(target_os = "windows")]
+fn collect_named_electron_process_entries_from_powershell(
+    expected_exe_path: &str,
+    fallback_process_name: &str,
+    log_prefix: &str,
+) -> Vec<(u32, Option<String>)> {
+    match collect_named_electron_process_entries_from_powershell_checked(
+        expected_exe_path, fallback_process_name, log_prefix, false,
+    ) {
+        Ok(probe) => probe.entries,
+        Err(error) => {
+            crate::modules::logger::log_warn(&error);
+            Vec::new()
+        }
+    }
+}
+
+#[cfg(any(test, target_os = "windows"))]
+#[derive(Debug, Clone)]
+struct WindowsElectronProcessProbe {
+    entries: Vec<(u32, Option<String>)>,
+    unresolved_pids: Vec<u32>,
+    needs_powershell: bool,
+}
+
+/// Accept a default-profile entry only when at least one source read the
+/// complete command line. Unresolved paths/profiles fail closed.
+#[cfg(any(test, target_os = "windows"))]
+fn merge_qoder_windows_process_probes(
+    native: WindowsElectronProcessProbe,
+    powershell: WindowsElectronProcessProbe,
+) -> Result<Vec<(u32, Option<String>)>, String> {
+    let mut entries = native.entries;
+    for (pid, dir) in powershell.entries {
+        if let Some((_, known_dir)) = entries.iter_mut().find(|(known_pid, _)| *known_pid == pid) {
+            if known_dir.is_none() {
+                *known_dir = dir;
+            }
+        } else {
+            entries.push((pid, dir));
+        }
+    }
+    let mut unresolved = native.unresolved_pids;
+    unresolved.extend(powershell.unresolved_pids);
+    unresolved.sort_unstable();
+    unresolved.dedup();
+    unresolved.retain(|pid| !entries.iter().any(|(known_pid, _)| known_pid == pid));
+    if !unresolved.is_empty() {
+        return Err(format!(
+            "Qoder Windows 进程参数或路径无法确认，拒绝将其视为已退出: unresolved_pids={unresolved:?}"
+        ));
+    }
+    entries.sort_by_key(|(pid, _)| *pid);
+    entries.dedup_by(|a, b| a.0 == b.0);
+    Ok(entries)
 }
 
 #[cfg(target_os = "windows")]
@@ -2692,10 +2975,15 @@ fn collect_named_electron_process_entries_from_sysinfo_fallback(
     app_token: &str,
     fallback_process_name: &str,
     log_prefix: &str,
-) -> Vec<(u32, Option<String>)> {
+    strict: bool,
+) -> WindowsElectronProcessProbe {
     let expected = normalize_path_for_compare(expected_exe_path);
     if expected.is_empty() {
-        return Vec::new();
+        return WindowsElectronProcessProbe {
+            entries: Vec::new(),
+            unresolved_pids: Vec::new(),
+            needs_powershell: false,
+        };
     }
 
     let expected_file_name = Path::new(expected_exe_path)
@@ -2710,30 +2998,51 @@ fn collect_named_electron_process_entries_from_sysinfo_fallback(
     let mut candidates = 0usize;
     let mut path_mismatch = 0usize;
     let mut missing_exe = 0usize;
+    let mut unresolved_pids = Vec::new();
     let mut cmdline_fallback_hit = 0usize;
 
     let mut system = System::new();
     system.refresh_processes_specifics(
         sysinfo::ProcessesToUpdate::All,
         true,
-        ProcessRefreshKind::nothing()
-            .with_exe(UpdateKind::OnlyIfNotSet)
-            .with_cmd(UpdateKind::OnlyIfNotSet),
+        ProcessRefreshKind::nothing().with_exe(UpdateKind::OnlyIfNotSet),
     );
     let current_pid = std::process::id();
-
-    for (pid, process) in system.processes() {
+    let snapshot_empty = system.processes().is_empty();
+    let expected_suffix = format!("\\{}", expected_file_name);
+    let fallback_suffix = format!("\\{}", fallback_file_name);
+    let candidate_pids: Vec<Pid> = system
+        .processes()
+        .iter()
+        .filter_map(|(pid, process)| {
+            if pid.as_u32() == current_pid { return None; }
+            let name = process.name().to_string_lossy().to_lowercase();
+            let exe_path = process
+                .exe()
+                .and_then(|value| value.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            (name == expected_file_name
+                || name == fallback_file_name
+                || exe_path.ends_with(&expected_suffix)
+                || exe_path.ends_with(&fallback_suffix)
+                || exe_path.contains(&app_token))
+                .then_some(*pid)
+        })
+        .collect();
+    // Only matching Electron candidates need their profile and helper arguments;
+    // avoid reading command lines from every process on Windows.
+    let candidate_pids_len = candidate_pids.len();
+    if !candidate_pids.is_empty() {
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&candidate_pids),
+            true,
+            ProcessRefreshKind::nothing().with_cmd(UpdateKind::OnlyIfNotSet),
+        );
+    }
+    for pid in candidate_pids {
+        let Some(process) = system.process(pid) else { continue; };
         let pid_u32 = pid.as_u32();
-        if pid_u32 == current_pid {
-            continue;
-        }
-
-        let name = process.name().to_string_lossy().to_lowercase();
-        let exe_path = process
-            .exe()
-            .and_then(|value| value.to_str())
-            .unwrap_or("")
-            .to_lowercase();
         let args_line = process
             .cmd()
             .iter()
@@ -2741,15 +3050,7 @@ fn collect_named_electron_process_entries_from_sysinfo_fallback(
             .collect::<Vec<String>>()
             .join(" ");
 
-        let is_target_app = name == expected_file_name
-            || name == fallback_file_name
-            || exe_path.ends_with(&format!("\\{}", expected_file_name))
-            || exe_path.ends_with(&format!("\\{}", fallback_file_name))
-            || exe_path.contains(&format!("\\{}\\", app_token))
-            || exe_path.contains(&app_token);
-        if !is_target_app
-            || is_helper_command_line(&args_line)
-            || args_line.contains("crashpad_handler")
+        if is_helper_command_line(&args_line) || args_line.contains("crashpad_handler")
         {
             continue;
         }
@@ -2758,6 +3059,10 @@ fn collect_named_electron_process_entries_from_sysinfo_fallback(
         let (actual, used_cmdline_fallback) = resolve_windows_process_exe_for_match(process);
         match actual {
             Some(actual_path) if actual_path == expected => {
+                if strict && process.cmd().is_empty() {
+                    unresolved_pids.push(pid_u32);
+                    continue;
+                }
                 if used_cmdline_fallback {
                     cmdline_fallback_hit += 1;
                 }
@@ -2772,7 +3077,10 @@ fn collect_named_electron_process_entries_from_sysinfo_fallback(
                 entries.push((pid_u32, dir));
             }
             Some(_) => path_mismatch += 1,
-            None => missing_exe += 1,
+            None => {
+                missing_exe += 1;
+                unresolved_pids.push(pid_u32);
+            }
         }
     }
 
@@ -2791,7 +3099,10 @@ fn collect_named_electron_process_entries_from_sysinfo_fallback(
         ));
     }
 
-    entries
+    let needs_powershell = snapshot_empty || candidate_pids_len == 0 || !unresolved_pids.is_empty();
+    WindowsElectronProcessProbe {
+        entries, unresolved_pids, needs_powershell,
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -2834,6 +3145,82 @@ fn collect_named_electron_process_entries_from_proc(app_token: &str) -> Vec<(u32
         }
     }
     entries
+}
+
+/// Checked Qoder Linux snapshot: do not treat an unreadable /proc directory,
+/// an unreadable Qoder command line, or an unverifiable executable as exit.
+/// Other processes may be inaccessible; only Qoder candidates block the flow.
+#[cfg(any(test, target_os = "linux"))]
+fn collect_qoder_process_entries_from_proc_root_checked(
+    proc_root: &Path,
+    expected_launch: &str,
+) -> Result<Vec<(u32, Option<String>)>, String> {
+    let expected_path = std::fs::canonicalize(expected_launch)
+        .unwrap_or_else(|_| PathBuf::from(expected_launch));
+    let expected = normalize_path_for_compare(&expected_path.to_string_lossy());
+    let proc_entries = std::fs::read_dir(proc_root)
+        .map_err(|err| format!("Qoder /proc 进程枚举失败: {err}"))?;
+    let mut entries = Vec::new();
+    for entry in proc_entries {
+        let entry = entry.map_err(|err| format!("Qoder /proc 进程枚举不完整: {err}"))?;
+        let pid_str = entry.file_name();
+        let pid_str = pid_str.to_string_lossy();
+        if !pid_str.chars().all(|ch| ch.is_ascii_digit()) {
+            continue;
+        }
+        let Ok(pid) = pid_str.parse::<u32>() else { continue };
+        let process_dir = entry.path();
+        let comm = std::fs::read_to_string(process_dir.join("comm"))
+            .unwrap_or_default().to_ascii_lowercase();
+        let executable = std::fs::read_link(process_dir.join("exe"));
+        let exe_hint = executable.as_ref().ok()
+            .map(|path| path.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        if exe_hint.contains("qoder") && exe_hint.ends_with(" (deleted)") {
+            // During upgrades Linux can keep an unlinked binary running.
+            // The old executable cannot be reliably compared to the new
+            // install path, so never assume the user profile is stopped.
+            return Err(format!("Qoder /proc/{pid}/exe 指向已删除但仍在运行的程序，拒绝修改登录态"));
+        }
+        // If the kernel supplies a known, different executable, this PID
+        // belongs to another installation/variant. Its inaccessible cmdline
+        // must not block the selected Qoder client.
+        if let Ok(path) = &executable {
+            let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
+            if normalize_path_for_compare(&resolved.to_string_lossy()) != expected {
+                continue;
+            }
+        }
+        let likely_qoder = comm.contains("qoder") || exe_hint.contains("qoder");
+        let cmdline = match std::fs::read(process_dir.join("cmdline")) {
+            Ok(value) if !value.is_empty() => value,
+            Ok(_) if likely_qoder => {
+                return Err(format!("Qoder /proc/{pid}/cmdline 为空，无法确认实例目录"));
+            }
+            Ok(_) => continue,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound && !process_dir.exists() => continue,
+            Err(err) if likely_qoder => {
+                return Err(format!("Qoder /proc/{pid}/cmdline 不可读取: {err}"));
+            }
+            Err(_) => continue,
+        };
+        let cmdline_str = String::from_utf8_lossy(&cmdline).replace('\0', " ");
+        let lower = cmdline_str.to_ascii_lowercase();
+        if !likely_qoder && !lower.contains("qoder") {
+            continue;
+        }
+        if is_helper_command_line(&lower) || lower.contains("crashpad_handler") {
+            continue;
+        }
+        executable.map_err(|err| {
+            format!("Qoder /proc/{pid}/exe 不可读取，无法确认客户端身份: {err}")
+        })?;
+        let dir = extract_user_data_dir_from_command_line(&cmdline_str);
+        entries.push((pid, dir));
+    }
+    entries.sort_by_key(|(pid, _)| *pid);
+    entries.dedup_by_key(|(pid, _)| *pid);
+    Ok(entries)
 }
 
 pub fn collect_codebuddy_process_entries() -> Vec<(u32, Option<String>)> {
@@ -3056,52 +3443,6 @@ pub fn resolve_codebuddy_cn_pid(last_pid: Option<u32>, user_data_dir: Option<&st
     resolve_codebuddy_cn_pid_from_entries(last_pid, user_data_dir, &entries)
 }
 
-pub fn collect_qoder_process_entries() -> Vec<(u32, Option<String>)> {
-    let expected_launch = resolve_expected_qoder_launch_path_for_match();
-    if expected_launch.is_none() {
-        return Vec::new();
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        let expected = expected_launch
-            .as_deref()
-            .expect("expected launch path must exist");
-        let entries =
-            collect_named_electron_process_entries_from_powershell(expected, "Qoder.exe", "Qoder");
-        if !entries.is_empty() {
-            return entries;
-        }
-        crate::modules::logger::log_warn(
-            "[Qoder Probe] PowerShell returned empty; fallback to sysinfo probe",
-        );
-        return collect_named_electron_process_entries_from_sysinfo_fallback(
-            expected,
-            "qoder",
-            "Qoder.exe",
-            "Qoder",
-        );
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let entries = collect_qoder_process_entries_macos();
-        if !entries.is_empty() {
-            return filter_entries_by_expected_launch_path("Qoder", entries, expected_launch);
-        }
-        return Vec::new();
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        let entries = collect_named_electron_process_entries_from_proc("qoder");
-        if !entries.is_empty() {
-            return filter_entries_by_expected_launch_path("Qoder", entries, expected_launch);
-        }
-        return Vec::new();
-    }
-}
-
 pub fn collect_trae_process_entries() -> Vec<(u32, Option<String>)> {
     collect_trae_process_entries_for_platform(crate::modules::trae_account::TraePlatformKind::Trae)
 }
@@ -3135,7 +3476,8 @@ pub fn collect_trae_process_entries_for_platform(
             "trae",
             "Trae.exe",
             platform.display_name(),
-        );
+            false,
+        ).entries;
     }
 
     #[cfg(target_os = "macos")]
@@ -3351,12 +3693,6 @@ fn get_default_codebuddy_cn_user_data_dir_for_os() -> Option<String> {
 
     #[allow(unreachable_code)]
     None
-}
-
-fn get_default_qoder_user_data_dir_for_os() -> Option<String> {
-    crate::modules::qoder_instance::get_default_qoder_user_data_dir()
-        .ok()
-        .map(|value| value.to_string_lossy().to_string())
 }
 
 fn get_default_trae_user_data_dir_for_os() -> Option<String> {
@@ -3616,9 +3952,9 @@ fn close_managed_instances_common<CollectEntries, SelectMainPids, CollectRemaini
     detail_logger: Option<fn(&[u32])>,
 ) -> Result<(), String>
 where
-    CollectEntries: Fn() -> Vec<(u32, Option<String>)>,
+    CollectEntries: Fn() -> Result<Vec<(u32, Option<String>)>, String>,
     SelectMainPids: Fn(&[(u32, Option<String>)], &HashSet<String>) -> Vec<u32>,
-    CollectRemainingEntries: Fn(&HashSet<String>) -> Vec<(u32, Option<String>)>,
+    CollectRemainingEntries: Fn(&HashSet<String>) -> Result<Vec<(u32, Option<String>)>, String>,
 {
     crate::modules::logger::log_info(start_message);
 
@@ -3638,7 +3974,7 @@ where
         timeout_secs
     ));
 
-    let entries = collect_entries();
+    let entries = collect_entries()?;
     crate::modules::logger::log_info(&format!(
         "[{}] collected_entries={}",
         log_prefix,
@@ -3687,7 +4023,7 @@ where
         ));
     }
 
-    let mut remaining_entries = collect_remaining_entries(&target_dirs);
+    let mut remaining_entries = collect_remaining_entries(&target_dirs)?;
     if !remaining_entries.is_empty() {
         let remaining_pids = collect_remaining_pids(&remaining_entries);
         crate::modules::logger::log_warn(&format!(
@@ -3710,7 +4046,7 @@ where
                     log_prefix, err
                 ));
             }
-            remaining_entries = collect_remaining_entries(&target_dirs);
+            remaining_entries = collect_remaining_entries(&target_dirs)?;
         }
     }
 
