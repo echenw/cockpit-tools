@@ -1,0 +1,463 @@
+.qoder-batch-claim-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(4px);
+  padding: 16px;
+  overflow-y: auto;
+}
+
+.qoder-batch-claim-modal {
+  width: min(620px, calc(100vw - 32px));
+  max-width: 620px;
+  max-height: calc(100vh - 48px);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+  animation: qoderModalFadeIn 0.2s ease-out;
+}
+
+@keyframes qoderModalFadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.97) translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.qoder-batch-claim-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.qoder-batch-claim-header .modal-close:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
+  background: transparent;
+}
+
+.qoder-batch-claim-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.qoder-batch-claim-heading h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.qoder-batch-claim-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: color-mix(in srgb, #f59e0b 16%, var(--bg-secondary));
+  color: #f59e0b;
+}
+
+.qoder-batch-claim-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.qoder-batch-claim-desc {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.qoder-batch-claim-settings {
+  margin: 0;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.qoder-batch-claim-settings legend {
+  padding: 0 4px;
+  font-weight: 600;
+}
+
+.qoder-batch-claim-auto-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.qoder-batch-claim-setting-fields {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.qoder-batch-claim-setting-fields label {
+  display: flex;
+  flex: 1 1 180px;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--text-secondary);
+}
+
+.qoder-batch-claim-setting-fields input {
+  min-width: 0;
+  padding: 7px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font: inherit;
+  color-scheme: inherit;
+}
+
+.qoder-batch-claim-settings input:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.qoder-batch-claim-settings input:disabled {
+  opacity: 0.55;
+}
+
+.qoder-batch-claim-settings-hint,
+.qoder-batch-claim-settings-error {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.qoder-batch-claim-settings-error {
+  color: var(--danger);
+}
+
+.qoder-batch-claim-settings-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.qoder-batch-claim-settings-actions > span {
+  flex: 1 1 230px;
+}
+
+.qoder-batch-claim-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  color: var(--text-secondary);
+  padding: 4px 2px;
+}
+
+.qoder-batch-claim-active-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #f59e0b;
+  font-size: 12px;
+}
+
+.qoder-batch-claim-select-all {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.qoder-batch-claim-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--bg-surface);
+}
+
+.qoder-batch-claim-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  transition: background-color 0.15s ease;
+}
+
+.qoder-batch-claim-row:last-child {
+  border-bottom: none;
+}
+
+.qoder-batch-claim-row:hover {
+  background: var(--bg-hover);
+}
+
+.qoder-batch-claim-account-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.qoder-batch-claim-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.qoder-batch-claim-email-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.qoder-batch-claim-email {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.qoder-batch-claim-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 500;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.qoder-batch-claim-quota {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.qoder-batch-claim-status-area {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+}
+
+.qoder-batch-claim-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 6px;
+}
+
+.qoder-batch-claim-status.pending {
+  color: var(--text-muted);
+}
+
+.qoder-batch-claim-status.running {
+  color: #f59e0b;
+}
+
+.qoder-batch-claim-status.claimable {
+  background: color-mix(in srgb, #f59e0b 12%, transparent);
+  color: #f59e0b;
+}
+
+/* 已经领取：不显示颜色（中性灰色） */
+.qoder-batch-claim-status.already {
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+}
+
+/* 不能领取：显示红色 */
+.qoder-batch-claim-status.none {
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: var(--danger);
+}
+
+.qoder-batch-claim-status.success {
+  background: color-mix(in srgb, var(--success) 12%, transparent);
+  color: var(--success);
+}
+
+.qoder-batch-claim-status.failed {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.qoder-batch-claim-footer {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-surface);
+}
+
+.qoder-batch-claim-summary {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.qoder-batch-claim-footer-btns {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+/* 账号卡片与列表中的活动常态化状态徽标 */
+.status-pill.reward-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: 0.01em;
+  user-select: none;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* 可领取：琥珀金色礼包 */
+.status-pill.reward-status-pill.claimable {
+  background: color-mix(in srgb, #f59e0b 14%, transparent);
+  color: #f59e0b;
+  border: 1px solid color-mix(in srgb, #f59e0b 35%, transparent);
+}
+
+/* 已经领取：不显示颜色（常规中性无色/灰色） */
+.status-pill.reward-status-pill.claimed {
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  opacity: 0.85;
+}
+
+/* 不能领取：显示红色礼包 */
+.status-pill.reward-status-pill.none {
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: var(--danger);
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+}
+
+/* 按钮高亮与状态定制 */
+.card-action-btn.reward-btn,
+.action-btn.reward-btn,
+.btn.reward-btn {
+  transition: all 0.2s ease;
+}
+
+/* 可领取：琥珀金色礼包 */
+.card-action-btn.reward-btn.has-reward,
+.action-btn.reward-btn.has-reward,
+.btn.reward-btn.has-reward {
+  color: #f59e0b;
+}
+
+.card-action-btn.reward-btn.has-reward:hover:not(:disabled),
+.action-btn.reward-btn.has-reward:hover:not(:disabled),
+.btn.reward-btn.has-reward:hover:not(:disabled) {
+  background: color-mix(in srgb, #f59e0b 14%, var(--bg-surface));
+  color: #d97706;
+  border-color: color-mix(in srgb, #f59e0b 40%, transparent);
+}
+
+/* 已经领取：不显示颜色（常规中性灰色礼包） */
+.card-action-btn.reward-btn.is-claimed,
+.action-btn.reward-btn.is-claimed {
+  color: var(--text-muted);
+}
+
+.card-action-btn.reward-btn.is-claimed:hover:not(:disabled),
+.action-btn.reward-btn.is-claimed:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+  border-color: var(--border);
+}
+
+/* 不能领取：显示红色礼包 */
+.card-action-btn.reward-btn.is-none,
+.action-btn.reward-btn.is-none {
+  color: var(--danger);
+  opacity: 0.85;
+}
+
+.card-action-btn.reward-btn.is-none:hover:not(:disabled),
+.action-btn.reward-btn.is-none:hover:not(:disabled) {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, var(--bg-surface));
+  border-color: color-mix(in srgb, var(--danger) 35%, transparent);
+}
+
+.btn.reward-btn {
+  position: relative;
+}
+
+.reward-count-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 9999px;
+  background: #f59e0b;
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 15px;
+  text-align: center;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  pointer-events: none;
+}

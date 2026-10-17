@@ -240,7 +240,6 @@ fn merge_regional_record(
     }
     incoming.display_name = incoming.display_name.or_else(|| existing.display_name.clone());
     incoming.plan_type = incoming.plan_type.or_else(|| existing.plan_type.clone());
-    incoming.web_session_cookie = incoming.web_session_cookie.or_else(|| existing.web_session_cookie.clone());
     if preserve_metadata && incoming.usage_updated_at < existing.usage_updated_at {
         incoming.auth_credit_usage_raw = existing.auth_credit_usage_raw.clone();
         incoming.auth_user_plan_raw = existing.auth_user_plan_raw.clone();
@@ -250,6 +249,12 @@ fn merge_regional_record(
         incoming.credits_remaining = existing.credits_remaining;
         incoming.credits_usage_percent = existing.credits_usage_percent;
         incoming.usage_updated_at = existing.usage_updated_at;
+    }
+    if preserve_metadata && incoming.reward_status_updated_at < existing.reward_status_updated_at {
+        incoming.reward_claim_status = existing.reward_claim_status.clone();
+        incoming.reward_window_end_at = existing.reward_window_end_at;
+        incoming.reward_status_updated_at = existing.reward_status_updated_at;
+        incoming.reward_query_last_error = existing.reward_query_last_error.clone();
     }
     if preserve_metadata {
         incoming.tags = normalize_tags(existing.tags.iter().flatten().chain(incoming.tags.iter().flatten()).cloned().collect());
@@ -702,6 +707,72 @@ fn update_last_used(account_id: &str) -> Result<QoderAccount, String> {
         .ok_or_else(|| format!("Qoder 账号不存在: {}", account_id))
 }
 
+fn credentials_match(current: &QoderAccount, expected: &QoderAccount) -> bool {
+    current.id == expected.id
+        && current.user_id == expected.user_id
+        && current.variant == expected.variant
+        && current.shared_refresh_token == expected.shared_refresh_token
+        && crate::modules::qoder_oauth::extract_access_token_from_account(current)
+            == crate::modules::qoder_oauth::extract_access_token_from_account(expected)
+}
+
+fn reward_snapshot_matches(current: &QoderAccount, expected: &QoderAccount) -> bool {
+    credentials_match(current, expected)
+        && current.reward_claim_status == expected.reward_claim_status
+        && current.reward_window_end_at == expected.reward_window_end_at
+        && current.reward_status_updated_at == expected.reward_status_updated_at
+        && current.reward_query_last_error == expected.reward_query_last_error
+}
+
+/// Query commits check both the grant and activity snapshot. Confirmed claim
+/// commits preserve the latest credentials and quota under the same storage lock.
+pub fn update_reward_status(
+    account_id: &str,
+    claim_status: Option<String>,
+    window_end_at: Option<i64>,
+    expected: Option<&QoderAccount>,
+) -> Result<QoderAccount, String> {
+    let _lock = QODER_ACCOUNT_INDEX_LOCK
+        .lock()
+        .map_err(|_| "获取 Qoder 账号锁失败".to_string())?;
+    let mut index = load_account_index_checked()?;
+    let mut account = load_account(account_id)
+        .ok_or_else(|| format!("Qoder 账号不存在: {}", account_id))?;
+    if let Some(expected) = expected {
+        if !reward_snapshot_matches(&account, expected) {
+            // 比较与保存持有同一把锁，其他领取/查询不能在两者之间插入写入。
+            return Ok(account);
+        }
+    }
+    account.reward_claim_status = claim_status;
+    account.reward_window_end_at = window_end_at;
+    account.reward_status_updated_at = Some(now_ts());
+    account.reward_query_last_error = None;
+    save_account_file(&account)?;
+    refresh_summary(&mut index, &account);
+    save_account_index(&index)?;
+    Ok(account)
+}
+
+/// Preserve the last confirmed activity, but expose query failure separately.
+/// An old request cannot attach an error to a newer authorization or claim.
+pub(crate) fn update_reward_query_error(
+    account_id: &str,
+    message: String,
+    expected: &QoderAccount,
+) -> Result<QoderAccount, String> {
+    let _lock = QODER_ACCOUNT_INDEX_LOCK.lock().map_err(|_| "获取 Qoder 账号锁失败")?;
+    let mut index = load_account_index_checked()?;
+    let mut account = load_account(account_id).ok_or("Qoder 账号已被删除")?;
+    if !reward_snapshot_matches(&account, expected) {
+        return Ok(account);
+    }
+    account.reward_query_last_error = Some(message);
+    save_account_file(&account)?;
+    refresh_summary(&mut index, &account);
+    save_account_index(&index)?;
+    Ok(account)
+}
 
 pub fn update_quota_query_error(
     account_id: &str,
@@ -757,27 +828,6 @@ pub(crate) fn update_account_usage(
     .ok_or_else(|| format!("Qoder 账号不存在: {}", account_id))
 }
 
-/// Caller must verify the website's user ID while holding the account refresh lock.
-pub(crate) fn update_verified_web_session(account_id: &str, cookie: String) -> Result<QoderAccount, String> {
-    update_account_metadata(account_id, |account| {
-        account.web_session_cookie = Some(cookie);
-    })?.ok_or_else(|| format!("Qoder 账号不存在: {}", account_id))
-}
-
-pub fn update_account_web_quota(
-    account_id: &str,
-    web_quota: Value,
-    cookie: Option<String>,
-) -> Result<QoderAccount, String> {
-    update_account_metadata(account_id, |account| {
-        account.web_quota_raw = Some(web_quota);
-        account.web_quota_updated_at = Some(now_ts());
-        if let Some(c) = cookie {
-            account.web_session_cookie = Some(c);
-        }
-    })?
-    .ok_or_else(|| format!("Qoder 账号不存在: {}", account_id))
-}
 
 fn list_accounts_from_index(index: &QoderAccountIndex) -> Vec<QoderAccount> {
     let mut accounts = Vec::new();
@@ -1326,6 +1376,10 @@ fn snapshot_to_account(snapshot: QoderSnapshot, existing: Option<&QoderAccount>)
             existing.and_then(|item| item.usage_updated_at)
         },
         tags: existing.and_then(|item| item.tags.clone()),
+        reward_claim_status: existing.and_then(|item| item.reward_claim_status.clone()),
+        reward_window_end_at: existing.and_then(|item| item.reward_window_end_at),
+        reward_status_updated_at: existing.and_then(|item| item.reward_status_updated_at),
+        reward_query_last_error: existing.and_then(|item| item.reward_query_last_error.clone()),
         auth_user_info_raw: snapshot
             .user_info_raw
             .or_else(|| existing.and_then(|item| item.auth_user_info_raw.clone())),
@@ -1341,7 +1395,6 @@ fn snapshot_to_account(snapshot: QoderSnapshot, existing: Option<&QoderAccount>)
         auth_credit_usage_raw: snapshot
             .credit_usage_raw
             .or_else(|| existing.and_then(|item| item.auth_credit_usage_raw.clone())),
-        web_session_cookie: existing.and_then(|item| item.web_session_cookie.clone()),
         created_at: existing.map(|item| item.created_at).unwrap_or(now),
         last_used: now,
     }
@@ -1407,28 +1460,21 @@ fn read_snapshot_from_state_db_path(db_path: &Path) -> Result<Option<QoderSnapsh
     read_snapshot_from_state_db_path_with_mode(db_path, false)
 }
 
-fn merge_snapshot(snapshot: QoderSnapshot) -> Result<QoderAccount, String> {
+fn merge_snapshot(snapshot: QoderSnapshot, new_grant: bool) -> Result<QoderAccount, String> {
     let _lock = QODER_ACCOUNT_INDEX_LOCK
         .lock()
         .map_err(|_| "获取 Qoder 账号锁失败".to_string())?;
     let index = merge_legacy_accounts_locked(load_account_index_checked()?)?;
     let accounts = list_accounts_from_index(&index);
     let existing = find_existing_account_for_snapshot(&snapshot, &accounts);
-    let account = snapshot_to_account(snapshot, existing.as_ref());
+    let mut account = snapshot_to_account(snapshot, existing.as_ref());
+    if new_grant {
+        account.reward_claim_status = None;
+        account.reward_window_end_at = None;
+        account.reward_status_updated_at = None;
+        account.reward_query_last_error = None;
+    }
     save_account_record_locked(account)
-}
-
-pub fn upsert_account_from_snapshot(
-    user_info_raw: Value,
-    user_plan_raw: Option<Value>,
-    credit_usage_raw: Option<Value>,
-) -> Result<QoderAccount, String> {
-    merge_snapshot(QoderSnapshot {
-        variant: None,
-        user_info_raw: Some(user_info_raw),
-        user_plan_raw,
-        credit_usage_raw,
-    })
 }
 
 pub(crate) fn check_qoder_variant_account_route(
@@ -1457,7 +1503,45 @@ pub(crate) fn upsert_test_account_from_snapshot(
         user_info_raw: Some(user_info_raw),
         user_plan_raw,
         credit_usage_raw,
-    })
+    }, false)
+}
+
+/// A fresh OAuth grant invalidates campaign results obtained with the old grant.
+pub(crate) fn save_oauth_grant_for_variant(
+    variant_key: &str,
+    user_info_raw: Value,
+) -> Result<QoderAccount, String> {
+    let kind = check_qoder_variant_account_route(variant_key)?;
+    merge_snapshot(QoderSnapshot {
+        variant: stored_variant_key(kind),
+        user_info_raw: Some(user_info_raw),
+        ..Default::default()
+    }, true)
+}
+
+/// Refresh and launch preparation update an existing account, never recreate one.
+/// Credential comparison and persistence share the deletion/storage boundary.
+pub(crate) fn update_refresh_snapshot(
+    expected: &QoderAccount,
+    kind: QoderVariantKind,
+    user_info_raw: Value,
+    user_plan_raw: Option<Value>,
+    credit_usage_raw: Option<Value>,
+) -> Result<QoderAccount, String> {
+    let _lock = QODER_ACCOUNT_INDEX_LOCK.lock().map_err(|_| "获取 Qoder 账号锁失败")?;
+    merge_legacy_accounts_locked(load_account_index_checked()?)?;
+    let existing = load_account(&expected.id).ok_or("Qoder 账号已被删除，未保存旧刷新结果")?;
+    if !credentials_match(&existing, expected) {
+        return Err("Qoder 授权已更新，未保存旧刷新结果".into());
+    }
+    if !account_supports_variant(&existing, kind) {
+        return Err("Qoder 国内与国际账号不能互通".into());
+    }
+    let account = snapshot_to_account(QoderSnapshot {
+        variant: stored_variant_key(kind),
+        user_info_raw: Some(user_info_raw), user_plan_raw, credit_usage_raw,
+    }, Some(&existing));
+    save_account_record_locked(account)
 }
 
 /// 授权后的后台资料只能更新仍存在、仍使用同一 AT 的客户端投影。
@@ -1725,7 +1809,7 @@ impl OfficialLoginCandidate {
     }
 
     pub fn import(self) -> Result<QoderAccount, String> {
-        merge_snapshot(self.snapshot)
+        merge_snapshot(self.snapshot, false)
     }
 }
 
@@ -2944,111 +3028,9 @@ pub fn run_quota_alert_if_needed() -> Result<(), String> {
     Ok(())
 }
 
-fn credentials_match(current: &QoderAccount, expected: &QoderAccount) -> bool {
-    current.id == expected.id
-        && current.user_id == expected.user_id
-        && current.variant == expected.variant
-        && current.shared_refresh_token == expected.shared_refresh_token
-        && crate::modules::qoder_oauth::extract_access_token_from_account(current)
-            == crate::modules::qoder_oauth::extract_access_token_from_account(expected)
-}
-
-pub(crate) fn save_oauth_grant_for_variant(
-    variant_key: &str,
-    user_info_raw: Value,
-) -> Result<QoderAccount, String> {
-    let kind = check_qoder_variant_account_route(variant_key)?;
-    merge_snapshot(QoderSnapshot {
-        variant: stored_variant_key(kind),
-        user_info_raw: Some(user_info_raw),
-        ..Default::default()
-    })
-}
-
-pub(crate) fn update_refresh_snapshot(
-    expected: &QoderAccount,
-    kind: QoderVariantKind,
-    user_info_raw: Value,
-    user_plan_raw: Option<Value>,
-    credit_usage_raw: Option<Value>,
-) -> Result<QoderAccount, String> {
-    let _lock = QODER_ACCOUNT_INDEX_LOCK.lock().map_err(|_| "获取 Qoder 账号锁失败")?;
-    merge_legacy_accounts_locked(load_account_index_checked()?)?;
-    let existing = load_account(&expected.id).ok_or("Qoder 账号已被删除，未保存旧刷新结果")?;
-    if !credentials_match(&existing, expected) {
-        return Err("Qoder 授权已更新，未保存旧刷新结果".into());
-    }
-    if !account_supports_variant(&existing, kind) {
-        return Err("Qoder 国内与国际账号不能互通".into());
-    }
-    let account = snapshot_to_account(QoderSnapshot {
-        variant: stored_variant_key(kind),
-        user_info_raw: Some(user_info_raw), user_plan_raw, credit_usage_raw,
-    }, Some(&existing));
-    save_account_record_locked(account)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn closing_native_app_keeps_its_final_renewal() {
-        let _lock = crate::modules::test_support::env_lock().lock().unwrap();
-        let _guard = DataDirGuard::new("closed-native-app-renewal");
-        for kind in [QoderVariantKind::QoderApp, QoderVariantKind::QoderCnApp] {
-            let original = serde_json::json!({
-                "schemaVersion": 1, "user": {"id": "closing-native-fixture"},
-                "token": "dt-before-fixture", "refreshToken": "drt-before-fixture"
-            });
-            upsert_test_account_from_snapshot(kind.provider_key(), original, None, None).unwrap();
-            let final_auth = serde_json::json!({
-                "schemaVersion": 1, "user": {"id": "closing-native-fixture"},
-                "token": "dt-final-fixture", "refreshToken": "drt-final-fixture"
-            });
-            let saved = save_closed_app_snapshot(QoderSnapshot {
-                variant: stored_variant_key(kind), user_info_raw: Some(final_auth.clone()),
-                ..Default::default()
-            }).unwrap();
-            assert_eq!(saved.shared_refresh_token.as_deref(), Some("drt-final-fixture"));
-            assert_eq!(load_account(&saved.id).unwrap().auth_user_info_raw, Some(final_auth));
-        }
-    }
-
-
-
-    #[test]
-    fn closing_app_cannot_replace_another_clients_regional_grant() {
-        let _lock = crate::modules::test_support::env_lock().lock().unwrap();
-        let _guard = DataDirGuard::new("closed-app-cross-client-grant");
-        for (ide, app) in [("qoder", QoderVariantKind::QoderApp), ("qoder_cn_ide", QoderVariantKind::QoderCnApp)] {
-            for expiry in [0, chrono::Utc::now().timestamp_millis() + 600_000] {
-                let old_app = serde_json::json!({
-                    "schemaVersion": 1, "user": {"id": "closing-cross-fixture"},
-                    "token": "dt-old-app-fixture", "refreshToken": "drt-old-app-fixture"
-                });
-                let original = upsert_test_account_from_snapshot(app.provider_key(), old_app.clone(), None, None).unwrap();
-                let latest = save_oauth_grant_for_variant(ide, serde_json::json!({
-                    "id": "closing-cross-fixture", "token": "dt-new-ide-fixture",
-                    "refreshToken": "drt-new-ide-fixture", "expireTime": expiry.to_string()
-                })).unwrap();
-                assert_eq!(latest.id, original.id);
-                let saved = save_closed_app_snapshot(QoderSnapshot {
-                    variant: stored_variant_key(app), user_info_raw: Some(old_app),
-                    ..Default::default()
-                }).unwrap();
-                assert_eq!(saved.variant, latest.variant);
-                assert_eq!(saved.shared_refresh_token, latest.shared_refresh_token);
-                assert_eq!(saved.auth_user_info_raw, latest.auth_user_info_raw);
-                let app_auth = &saved.client_auth[app.provider_key()];
-                assert_eq!(app_auth["token"], "dt-old-app-fixture");
-                assert!(app_auth.get("refreshToken").is_none());
-                assert_eq!(load_account(&saved.id).unwrap().shared_refresh_token, latest.shared_refresh_token);
-            }
-        }
-    }
-
-
 
     #[test]
     fn app_auth_file_failures_preserve_or_report_the_recoverable_session() {
@@ -3093,6 +3075,238 @@ mod tests {
         assert_eq!(fs::read(&auth).unwrap(), b"verified-target");
     }
 
+    #[test]
+    fn claim_without_campaign_updates_list_snapshot_but_rejects_ambiguous_and_stale_results() {
+        let _lock = crate::modules::test_support::env_lock().lock().unwrap();
+        let _guard = DataDirGuard::new("claim-empty-campaign");
+        let account = save_oauth_grant_for_variant("qoder", serde_json::json!({
+            "id":"claim-empty-fixture", "token":"dt-fixture", "refreshToken":"drt-fixture"
+        })).unwrap();
+        let ready = update_reward_status(&account.id, Some("CLAIMABLE".into()), Some(now_ts() + 60), None).unwrap();
+        let ready = update_reward_query_error(&account.id, "previous query failure".into(), &ready).unwrap();
+        let campaign = serde_json::json!({
+            "campaignId":"fixture-100", "actionType":"CLAIM_BENEFIT", "claimStatus":"CLAIMABLE",
+            "benefit":{"kind":"CREDITS", "amount":100}
+        });
+        let available = [campaign.clone()];
+        assert_eq!(crate::modules::qoder_oauth::require_claim_campaign(&available, &ready).unwrap()["campaignId"], "fixture-100");
+        let ambiguous = [campaign.clone(), campaign.clone()];
+        assert!(crate::modules::qoder_oauth::require_claim_campaign(&ambiguous, &ready).is_err());
+        let malformed = [serde_json::json!({
+            "actionType":"CLAIM_BENEFIT", "benefit":{"kind":"CREDITS", "amount":100}
+        })];
+        assert!(crate::modules::qoder_oauth::require_claim_campaign(&malformed, &ready).is_err());
+        assert_eq!(load_account(&account.id).unwrap().reward_claim_status.as_deref(), Some("CLAIMABLE"));
+
+        let error = crate::modules::qoder_oauth::require_claim_campaign(&[], &ready).unwrap_err();
+        assert_eq!(error, "当前账号活动列表中无可确认的 100 积分领取活动");
+        let none = load_account(&account.id).unwrap();
+        assert_eq!(none.reward_claim_status.as_deref(), Some("NONE"));
+        assert_eq!(none.reward_window_end_at, None);
+        assert!(none.reward_status_updated_at.is_some());
+        assert!(none.reward_query_last_error.is_none());
+
+        let claimed = update_reward_status(&account.id, Some("CLAIMED".into()), Some(now_ts() + 60), None).unwrap();
+        let error = crate::modules::qoder_oauth::require_claim_campaign(&[], &none).unwrap_err();
+        assert!(error.contains("活动状态已变化"));
+        assert_eq!(load_account(&account.id).unwrap().reward_claim_status, claimed.reward_claim_status);
+        let fresh = save_oauth_grant_for_variant("qoder", serde_json::json!({
+            "id":"claim-empty-fixture", "token":"dt-new-fixture", "refreshToken":"drt-new-fixture"
+        })).unwrap();
+        assert!(crate::modules::qoder_oauth::require_claim_campaign(&[], &claimed).is_err());
+        assert_eq!(load_account(&account.id).unwrap().reward_claim_status, fresh.reward_claim_status);
+    }
+
+    #[test]
+    fn oauth_reauthorization_invalidates_cached_no_campaign() {
+        let _lock = crate::modules::test_support::env_lock().lock().unwrap();
+        let _guard = DataDirGuard::new("oauth-invalidates-campaign");
+        let first = save_oauth_grant_for_variant("qoder_app", serde_json::json!({
+            "id":"reward-fixture", "token":"dt-first-fixture", "refreshToken":"drt-first-fixture"
+        })).unwrap();
+        update_account_tags(&first.id, vec!["kept-tag".into()]).unwrap();
+        let none = update_reward_status(&first.id, Some("NONE".into()), None, None).unwrap();
+        update_reward_query_error(&first.id, "fixture campaign error".into(), &none).unwrap();
+        let fresh = save_oauth_grant_for_variant("qoder_app", serde_json::json!({
+            "id":"reward-fixture", "token":"dt-new-fixture", "refreshToken":"drt-new-fixture"
+        })).unwrap();
+        assert_eq!(fresh.id, first.id);
+        assert_eq!(fresh.reward_claim_status, None);
+        assert_eq!(fresh.reward_window_end_at, None);
+        assert_eq!(fresh.reward_status_updated_at, None);
+        assert_eq!(fresh.reward_query_last_error, None);
+        assert_eq!(fresh.tags, Some(vec!["kept-tag".into()]));
+        assert_eq!(fresh.shared_refresh_token.as_deref(), Some("drt-new-fixture"));
+    }
+
+    #[test]
+    fn old_campaign_response_cannot_change_reauthorized_account() {
+        let _lock = crate::modules::test_support::env_lock().lock().unwrap();
+        let _guard = DataDirGuard::new("campaign-old-grant");
+        let first = save_oauth_grant_for_variant("qoder", serde_json::json!({
+            "id":"reward-fixture", "token":"dt-first-fixture", "refreshToken":"drt-first-fixture"
+        })).unwrap();
+        let fresh = save_oauth_grant_for_variant("qoder", serde_json::json!({
+            "id":"reward-fixture", "token":"dt-new-fixture", "refreshToken":"drt-new-fixture"
+        })).unwrap();
+        // Both grants initially have identical empty activity fields: only checking
+        // those fields would accept this old request's late NONE response.
+        let after = update_reward_status(&first.id, Some("NONE".into()), None, Some(&first)).unwrap();
+        assert_eq!(after.reward_claim_status, None);
+        update_reward_query_error(&first.id, "old request failed".into(), &first).unwrap();
+        let after = load_account(&fresh.id).unwrap();
+        assert_eq!(after.reward_query_last_error, None);
+        assert_eq!(after.shared_refresh_token, fresh.shared_refresh_token);
+        let claimed = update_reward_status(&fresh.id, Some("CLAIMED".into()), Some(now_ts() + 60), None).unwrap();
+        update_reward_query_error(&fresh.id, "pre-claim query failed".into(), &fresh).unwrap();
+        assert_eq!(load_account(&fresh.id).unwrap().reward_claim_status, claimed.reward_claim_status);
+        assert_eq!(load_account(&fresh.id).unwrap().reward_query_last_error, None);
+    }
+
+    #[test]
+    fn reward_update_recovers_unreadable_index_without_losing_other_accounts() {
+        let _lock = crate::modules::test_support::env_lock().lock().unwrap();
+        let _guard = DataDirGuard::new("reward-unreadable-index");
+        let first = save_oauth_grant_for_variant("qoder", serde_json::json!({
+            "id":"reward-first-fixture", "token":"dt-first-fixture", "refreshToken":"drt-first-fixture"
+        })).unwrap();
+        let second = save_oauth_grant_for_variant("qoder", serde_json::json!({
+            "id":"reward-second-fixture", "token":"dt-second-fixture", "refreshToken":"drt-second-fixture"
+        })).unwrap();
+        let index_path = get_accounts_index_path().unwrap();
+        fs::write(&index_path, [0xff_u8, 0xfe]).unwrap();
+
+        update_reward_status(&first.id, Some("CLAIMED".into()), None, Some(&first)).unwrap();
+
+        let index: QoderAccountIndex = serde_json::from_str(
+            &fs::read_to_string(&index_path).unwrap(),
+        ).unwrap();
+        let indexed_ids: HashSet<_> = index.accounts.iter().map(|account| account.id.as_str()).collect();
+        assert_eq!(indexed_ids, HashSet::from([first.id.as_str(), second.id.as_str()]));
+        let accounts = list_accounts_checked().unwrap();
+        assert_eq!(accounts.len(), 2);
+        let claimed = accounts.iter().find(|account| account.id == first.id).unwrap();
+        assert_eq!(claimed.reward_claim_status.as_deref(), Some("CLAIMED"));
+        let preserved = accounts.iter().find(|account| account.id == second.id).unwrap();
+        assert_eq!(preserved.shared_refresh_token, second.shared_refresh_token);
+        assert_eq!(preserved.reward_claim_status, second.reward_claim_status);
+    }
+
+    #[test]
+    fn campaign_error_is_separate_from_last_confirmed_status() {
+        let _lock = crate::modules::test_support::env_lock().lock().unwrap();
+        let _guard = DataDirGuard::new("campaign-error-projection");
+        let account = save_oauth_grant_for_variant("qoder_cn_app", serde_json::json!({
+            "id":"reward-fixture", "token":"dt-fixture", "refreshToken":"drt-fixture"
+        })).unwrap();
+        let none = update_reward_status(&account.id, Some("NONE".into()), None, None).unwrap();
+        let failed = update_reward_query_error(&account.id, "fixture network failure".into(), &none).unwrap();
+        assert_eq!(failed.reward_claim_status, none.reward_claim_status);
+        assert_eq!(failed.reward_status_updated_at, none.reward_status_updated_at);
+        assert_eq!(failed.clone().for_ipc().reward_query_last_error.as_deref(), Some("fixture network failure"));
+        let recovered = update_reward_status(&account.id, Some("CLAIMABLE".into()), Some(now_ts() + 60), Some(&failed)).unwrap();
+        assert_eq!(recovered.reward_query_last_error, None);
+        assert_eq!(recovered.reward_claim_status.as_deref(), Some("CLAIMABLE"));
+    }
+
+    #[test]
+    fn refresh_commit_cannot_recreate_deleted_or_replace_new_grant() {
+        let _lock = crate::modules::test_support::env_lock().lock().unwrap();
+        let _guard = DataDirGuard::new("refresh-deleted-account");
+        let account = save_oauth_grant_for_variant("qoder", serde_json::json!({
+            "id":"refresh-fixture", "token":"dt-before-fixture", "refreshToken":"drt-before-fixture"
+        })).unwrap();
+        let response = serde_json::json!({
+            "id":"refresh-fixture", "token":"dt-refresh-fixture", "refreshToken":"drt-refresh-fixture"
+        });
+        remove_account(&account.id).unwrap();
+        assert!(update_refresh_snapshot(&account, QoderVariantKind::Qoder, response.clone(), None, None).is_err());
+        assert!(list_accounts_checked().unwrap().is_empty());
+        let fresh = save_oauth_grant_for_variant("qoder", serde_json::json!({
+            "id":"refresh-fixture", "token":"dt-new-fixture", "refreshToken":"drt-new-fixture"
+        })).unwrap();
+        assert!(update_refresh_snapshot(&account, QoderVariantKind::Qoder, response.clone(), None, None).is_err());
+        assert_eq!(load_account(&fresh.id).unwrap().shared_refresh_token, fresh.shared_refresh_token);
+        let current = update_refresh_snapshot(&fresh, QoderVariantKind::Qoder, response, None, None).unwrap();
+        assert_eq!(current.shared_refresh_token.as_deref(), Some("drt-refresh-fixture"));
+    }
+
+    #[test]
+    fn closing_app_preserves_same_clients_fresh_oauth_grant() {
+        let _lock = crate::modules::test_support::env_lock().lock().unwrap();
+        let _guard = DataDirGuard::new("closed-app-fresh-oauth");
+        for kind in [QoderVariantKind::QoderApp, QoderVariantKind::QoderCnApp] {
+            let fresh = save_oauth_grant_for_variant(kind.provider_key(), serde_json::json!({
+                "id":"closing-fixture", "token":"dt-new-fixture", "refreshToken":"drt-new-fixture",
+                "expireTime": (chrono::Utc::now().timestamp_millis() + 600_000).to_string()
+            })).unwrap();
+            let after = save_closed_app_snapshot(QoderSnapshot {
+                variant: stored_variant_key(kind),
+                user_info_raw: Some(serde_json::json!({
+                    "schemaVersion":1, "token":"dt-old-native-fixture", "refreshToken":"drt-old-native-fixture",
+                    "user":{"id":"closing-fixture"}
+                })),
+                ..Default::default()
+            }).unwrap();
+            assert_eq!(after.shared_refresh_token, fresh.shared_refresh_token);
+            assert_eq!(after.auth_user_info_raw, fresh.auth_user_info_raw);
+            assert_eq!(load_account(&fresh.id).unwrap().auth_user_info_raw, fresh.auth_user_info_raw);
+        }
+    }
+
+    #[test]
+    fn closing_app_cannot_replace_another_clients_regional_grant() {
+        let _lock = crate::modules::test_support::env_lock().lock().unwrap();
+        let _guard = DataDirGuard::new("closed-app-cross-client-grant");
+        for (ide, app) in [("qoder", QoderVariantKind::QoderApp), ("qoder_cn_ide", QoderVariantKind::QoderCnApp)] {
+            for expiry in [0, chrono::Utc::now().timestamp_millis() + 600_000] {
+                let old_app = serde_json::json!({
+                    "schemaVersion": 1, "user": {"id": "closing-cross-fixture"},
+                    "token": "dt-old-app-fixture", "refreshToken": "drt-old-app-fixture"
+                });
+                let original = upsert_test_account_from_snapshot(app.provider_key(), old_app.clone(), None, None).unwrap();
+                let latest = save_oauth_grant_for_variant(ide, serde_json::json!({
+                    "id": "closing-cross-fixture", "token": "dt-new-ide-fixture",
+                    "refreshToken": "drt-new-ide-fixture", "expireTime": expiry.to_string()
+                })).unwrap();
+                assert_eq!(latest.id, original.id);
+                let saved = save_closed_app_snapshot(QoderSnapshot {
+                    variant: stored_variant_key(app), user_info_raw: Some(old_app),
+                    ..Default::default()
+                }).unwrap();
+                assert_eq!(saved.variant, latest.variant);
+                assert_eq!(saved.shared_refresh_token, latest.shared_refresh_token);
+                assert_eq!(saved.auth_user_info_raw, latest.auth_user_info_raw);
+                let app_auth = &saved.client_auth[app.provider_key()];
+                assert_eq!(app_auth["token"], "dt-old-app-fixture");
+                assert!(app_auth.get("refreshToken").is_none());
+                assert_eq!(load_account(&saved.id).unwrap().shared_refresh_token, latest.shared_refresh_token);
+            }
+        }
+    }
+
+    #[test]
+    fn closing_native_app_keeps_its_final_renewal() {
+        let _lock = crate::modules::test_support::env_lock().lock().unwrap();
+        let _guard = DataDirGuard::new("closed-native-app-renewal");
+        for kind in [QoderVariantKind::QoderApp, QoderVariantKind::QoderCnApp] {
+            let original = serde_json::json!({
+                "schemaVersion": 1, "user": {"id": "closing-native-fixture"},
+                "token": "dt-before-fixture", "refreshToken": "drt-before-fixture"
+            });
+            upsert_test_account_from_snapshot(kind.provider_key(), original, None, None).unwrap();
+            let final_auth = serde_json::json!({
+                "schemaVersion": 1, "user": {"id": "closing-native-fixture"},
+                "token": "dt-final-fixture", "refreshToken": "drt-final-fixture"
+            });
+            let saved = save_closed_app_snapshot(QoderSnapshot {
+                variant: stored_variant_key(kind), user_info_raw: Some(final_auth.clone()),
+                ..Default::default()
+            }).unwrap();
+            assert_eq!(saved.shared_refresh_token.as_deref(), Some("drt-final-fixture"));
+            assert_eq!(load_account(&saved.id).unwrap().auth_user_info_raw, Some(final_auth));
+        }
+    }
 
     #[test]
     fn account_name_is_not_inferred_as_plan_type() {
@@ -3195,11 +3409,12 @@ mod tests {
     }
 
     #[test]
-    fn usage_and_plan_update_preserves_latest_credentials() {
+    fn usage_and_plan_update_preserves_latest_credentials_and_reward_state() {
         let _lock = crate::modules::test_support::env_lock().lock().expect("lock env");
         let _guard = DataDirGuard::new("usage-preserves-app-session");
         let mut latest = variant_test_account("active", Some("qoder_app"));
         latest.auth_user_info_raw = Some(serde_json::json!({"token": "newer-session"}));
+        latest.reward_claim_status = Some("CLAIMED".to_string());
         latest.tags = Some(vec!["keep".to_string()]);
         upsert_account_record(latest.clone()).unwrap();
         let updated = update_account_usage("active", serde_json::json!({
@@ -3209,6 +3424,7 @@ mod tests {
             "planTierName": "Enterprise VPC"
         }))).unwrap();
         assert_eq!(updated.auth_user_info_raw, latest.auth_user_info_raw);
+        assert_eq!(updated.reward_claim_status, latest.reward_claim_status);
         assert_eq!(updated.tags, latest.tags);
         assert_eq!(updated.credits_remaining, Some(160.0));
         assert_eq!(updated.plan_type.as_deref(), Some("Enterprise VPC"));
@@ -3224,7 +3440,7 @@ mod tests {
     }
 
     #[test]
-    fn refreshed_app_usage_replaces_stale_plan_and_invalidates_web_cache() {
+    fn refreshed_app_usage_replaces_stale_plan() {
         let _lock = crate::modules::test_support::env_lock().lock().expect("lock env");
         let _guard = DataDirGuard::new("app-plan-and-web-cache");
         let mut account = variant_test_account("active", Some("qoder_app"));
@@ -3232,7 +3448,6 @@ mod tests {
         account.auth_user_plan_raw = Some(serde_json::json!({"planTierName": "Free"}));
         account.auth_user_info_raw = Some(serde_json::json!({"userTag": "FREE", "token": "synthetic-token"}));
         account.usage_updated_at = Some(2);
-        account.web_session_cookie = Some("session=synthetic-cookie".to_string());
         upsert_account_record(account.clone()).unwrap();
 
         let updated = update_account_usage("active", serde_json::json!({
@@ -3241,7 +3456,6 @@ mod tests {
         assert_eq!(updated.plan_type.as_deref(), Some("personal_professional"));
         assert_eq!(updated.auth_user_plan_raw, None);
         assert_eq!(updated.auth_user_info_raw, account.auth_user_info_raw);
-        assert_eq!(updated.web_session_cookie, account.web_session_cookie);
 
         let from_snapshot = snapshot_to_account(QoderSnapshot {
             variant: Some("qoder_app".to_string()),
@@ -3252,7 +3466,6 @@ mod tests {
         assert_eq!(from_snapshot.plan_type.as_deref(), Some("personal_professional"));
         assert_eq!(from_snapshot.auth_user_plan_raw, None);
 
-        // 查询失败不提供新用量；保留缓存和原更新时间，而不是伪装成刷新成功。
         let no_new_usage = snapshot_to_account(QoderSnapshot {
             variant: Some("qoder_app".to_string()),
             ..Default::default()
@@ -3482,7 +3695,10 @@ mod tests {
                 serde_json::json!({"plan_tier_name": "Pro", "user_type": "personal"}),
             ),
             auth_credit_usage_raw: Some(serde_json::json!({"displayMode": "qoder"})),
-            web_session_cookie: None,
+            reward_claim_status: None,
+            reward_window_end_at: None,
+            reward_status_updated_at: None,
+            reward_query_last_error: None,
             created_at: 1,
             last_used: 1,
         }
@@ -3594,7 +3810,10 @@ mod tests {
             auth_user_info_raw: None,
             auth_user_plan_raw: None,
             auth_credit_usage_raw: None,
-            web_session_cookie: None,
+            reward_claim_status: None,
+            reward_window_end_at: None,
+            reward_status_updated_at: None,
+            reward_query_last_error: None,
             created_at: 1,
             last_used: 1,
         }
@@ -4010,6 +4229,9 @@ mod tests {
             ide.credits_remaining = Some(99.0);
             ide.credits_usage_percent = Some(1.0);
             ide.usage_updated_at = Some(10);
+            ide.reward_claim_status = Some("UNCLAIMED".into());
+            ide.reward_window_end_at = Some(100);
+            ide.reward_status_updated_at = Some(10);
 
             let mut app = ide.clone();
             app.id = "legacy-app".into();
@@ -4029,6 +4251,9 @@ mod tests {
             app.credits_remaining = Some(240.0);
             app.credits_usage_percent = Some(20.0);
             app.usage_updated_at = Some(20);
+            app.reward_claim_status = Some("CLAIMED".into());
+            app.reward_window_end_at = Some(200);
+            app.reward_status_updated_at = Some(20);
 
             for account in [&ide, &app] {
                 let content = crate::modules::secure_account_storage::serialize_account_file("qoder", account).unwrap();
@@ -4059,6 +4284,9 @@ mod tests {
             assert_eq!(merged.credits_remaining, Some(240.0));
             assert_eq!(merged.credits_usage_percent, Some(20.0));
             assert_eq!(merged.usage_updated_at, Some(20));
+            assert_eq!(merged.reward_claim_status.as_deref(), Some("CLAIMED"));
+            assert_eq!(merged.reward_window_end_at, Some(200));
+            assert_eq!(merged.reward_status_updated_at, Some(20));
             let expected_rt = if canonical_last_used > app.last_used { "ide-rt-fixture" } else { "app-rt-fixture" };
             assert_eq!(merged.shared_refresh_token.as_deref(), Some(expected_rt));
             for (kind, expected_at) in [
@@ -4079,6 +4307,7 @@ mod tests {
             let updated = load_account("legacy-ide").unwrap();
             assert!(updated.tags.is_none());
             assert_eq!(updated.credits_used, Some(90.0));
+            assert_eq!(updated.reward_claim_status, merged.reward_claim_status);
             assert_eq!(updated.client_auth, merged.client_auth);
             assert_eq!(updated.shared_refresh_token, merged.shared_refresh_token);
         }

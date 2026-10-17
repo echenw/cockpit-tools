@@ -12,10 +12,12 @@ use std::time::{Duration, Instant};
 use url::Url;
 use uuid::Uuid;
 
-use crate::models::qoder::{QoderAccount, QoderOAuthStartResponse};
+use crate::models::qoder::{QoderAccount, QoderClaimRewardResult, QoderOAuthStartResponse};
 use crate::modules::qoder_variant::QoderVariantKind;
 use crate::modules::{config, logger, qoder_account, qoder_instance, qoder_platform_paths};
 
+#[path = "qoder_campaign_identity.rs"]
+mod campaign_identity;
 
 const OAUTH_TIMEOUT_SECONDS: i64 = 600;
 const OAUTH_POLL_INTERVAL_MS: u64 = 1000;
@@ -1510,6 +1512,7 @@ fn client_access_token_is_current(raw: &Value) -> bool {
             .is_some_and(|expiry| expiry > chrono::Utc::now().timestamp_millis())
 }
 
+/// Query quota and plan with the supplied AT; never rotate or write credentials.
 async fn refresh_account_usage(
     session: &QoderAccount,
     params: &QoderVariantParams,
@@ -1919,24 +1922,15 @@ fn ensure_refresh_identity_consistent(
 }
 
 pub async fn refresh_all_accounts_from_openapi() -> Result<i32, String> {
-    let accounts = qoder_account::list_accounts();
+    let accounts = qoder_account::list_accounts_checked()?;
     if accounts.is_empty() {
         return Ok(0);
     }
 
     let mut success_count: i32 = 0;
     for account in accounts {
-        // Intl App / IDE share the regional account; never send CN credentials to Intl.
-        match qoder_account::account_variant_kind(&account) {
-            Ok(kind) if !kind.is_cn() => {}
-            Ok(kind) => {
-                logger::log_info(&format!(
-                    "[Qoder Refresh] 批量刷新跳过国内账号: account_id={}, variant={}",
-                    account.id,
-                    kind.provider_key()
-                ));
-                continue;
-            }
+        let kind = match qoder_account::account_variant_kind(&account) {
+            Ok(kind) => kind,
             Err(err) => {
                 logger::log_warn(&format!(
                     "[Qoder Refresh] 批量刷新跳过变体字段无效账号: account_id={}, error={}",
@@ -1944,8 +1938,8 @@ pub async fn refresh_all_accounts_from_openapi() -> Result<i32, String> {
                 ));
                 continue;
             }
-        }
-        match refresh_account_token_for_variant(QODER_VARIANT_QODER, &account.id, false).await {
+        };
+        match refresh_account_and_campaigns(kind.provider_key(), &account.id).await {
             Ok(_) => {
                 success_count += 1;
             }
@@ -1959,6 +1953,31 @@ pub async fn refresh_all_accounts_from_openapi() -> Result<i32, String> {
     }
 
     Ok(success_count)
+}
+
+/// Shared by the UI refresh and report refresh. Client ownership belongs to
+/// the selected source; activity errors are persisted as a separate result.
+pub(crate) async fn refresh_account_and_campaigns(
+    variant_key: &str,
+    account_id: &str,
+) -> Result<QoderAccount, String> {
+    refresh_account_token_for_variant(variant_key, account_id, false).await?;
+    if variant_supports_job_line(variant_key) {
+        if let Err(err) = refresh_account_token_for_variant(variant_key, account_id, true).await {
+            logger::log_warn(&format!("[Qoder Refresh] job 凭据同步失败，device 会话已保存: {}", err));
+        }
+    }
+    match query_qoder_campaign_status(account_id).await {
+        Ok(account) => Ok(account),
+        Err(err) => {
+            let account = qoder_account::load_account(account_id).ok_or("Qoder 账号已被删除")?;
+            if account.reward_query_last_error.is_none() {
+                return Err(err);
+            }
+            logger::log_warn(&format!("[Qoder Refresh] 活动查询失败，账号凭据已刷新: {}", err));
+            Ok(account)
+        }
+    }
 }
 
 fn clear_pending_if_matches(login_id: &str) {
@@ -2111,7 +2130,6 @@ pub async fn start_login_for_variant(
         interval_seconds: (OAUTH_POLL_INTERVAL_MS / 1000).max(1),
     })
 }
-
 
 pub async fn complete_login(
     login_id: &str,
@@ -2323,6 +2341,134 @@ pub fn cancel_login_for_variant(
     Ok(())
 }
 
+fn build_qoder_claim_headers(
+    kind: QoderVariantKind,
+    token: &str,
+    machine_info: Option<&QoderMachineInfo>,
+) -> reqwest::header::HeaderMap {
+    use reqwest::header::{HeaderName, HeaderValue, CONTENT_TYPE};
+    // 两地区共用 Bearer + ClientType:10 + UA:Qoder。CN 不要求设备头；
+    // Intl 使用参考 qoder-ai 的按账号 UMID 身份；不复用本机 App 的硬件身份。
+    let mut headers = build_qoder_app_usage_headers(token);
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    if !kind.is_cn() {
+        headers.insert(
+            HeaderName::from_static("cosy-version"),
+            HeaderValue::from_static(campaign_identity::CAMPAIGN_CLIENT_VERSION),
+        );
+        if let Some(machine) = machine_info {
+            for (name, value) in [
+                ("cosy-version", machine.cosy_version.as_deref()),
+                ("cosy-machinetoken", Some(machine.token.as_str())),
+                ("cosy-machinetype", machine.machine_type.as_deref()),
+                ("cosy-machinecode", machine.machine_code.as_deref()),
+                ("cosy-machineid", machine.machine_id.as_deref()),
+                ("cosy-machinehostname", machine.machine_hostname.as_deref()),
+                ("cosy-machineos", machine.machine_os.as_deref()),
+            ] {
+                if let Some(value) = value.and_then(|value| normalize_non_empty(Some(value))) {
+                    if let Ok(value) = HeaderValue::from_str(&value) {
+                        headers.insert(HeaderName::from_static(name), value);
+                    }
+                }
+            }
+        }
+    }
+    headers
+}
+
+fn select_unique_100_campaign(campaigns: &[Value]) -> Result<Option<&Value>, String> {
+    select_unique_100_campaign_at(campaigns, now_timestamp())
+}
+
+fn select_unique_100_campaign_at(campaigns: &[Value], now: i64) -> Result<Option<&Value>, String> {
+    let mut selected = None;
+    for campaign in campaigns {
+        let benefit = &campaign["benefit"];
+        if campaign["actionType"].as_str() != Some("CLAIM_BENEFIT")
+            || benefit["kind"].as_str() != Some("CREDITS")
+            || benefit["amount"].as_i64() != Some(100)
+        {
+            continue;
+        }
+        if !campaign["campaignId"].as_str().is_some_and(|id| !id.trim().is_empty()) {
+            return Err("Qoder 积分活动缺少有效 campaignId".into());
+        }
+        let bound = |key: &str| match campaign.get(key) {
+            None | Some(Value::Null) => Ok(0),
+            Some(value) => value.as_i64().filter(|value| *value >= 0)
+                .ok_or_else(|| format!("Qoder 活动 {} 格式无效", key)),
+        };
+        let start = bound("startAt")?;
+        let end = bound("endAt")?;
+        if start > now || (end > 0 && now >= end) {
+            continue;
+        }
+        if selected.replace(campaign).is_some() {
+            return Err("当前账号存在多个有效的 100 积分活动，无法确定每日领取目标".into());
+        }
+    }
+    Ok(selected)
+}
+
+/// A confirmed empty claim list must invalidate the list page's old claimable
+/// snapshot before returning the business outcome. Ambiguous lists never write.
+pub(crate) fn require_claim_campaign<'a>(
+    campaigns: &'a [Value],
+    expected: &QoderAccount,
+) -> Result<&'a Value, String> {
+    if let Some(campaign) = select_unique_100_campaign(campaigns)? {
+        return Ok(campaign);
+    }
+    let saved = qoder_account::update_reward_status(
+        &expected.id, Some("NONE".into()), None, Some(expected),
+    )?;
+    if saved.reward_claim_status.as_deref() != Some("NONE") {
+        return Err("Qoder 活动状态已变化，请刷新后重试".into());
+    }
+    Err("当前账号活动列表中无可确认的 100 积分领取活动".into())
+}
+
+fn campaign_failure_detail(body: &Value) -> String {
+    // Only business identifiers enter errors; never echo an arbitrary response body.
+    let identifier = |value: &Value| value.as_str().filter(|text| {
+        !text.is_empty() && text.len() <= 128
+            && text.bytes().all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+    }).map(str::to_string);
+    let code = ["failureCode", "errorCode", "code"].iter()
+        .find_map(|key| body.get(*key).and_then(identifier));
+    let status = body.get("status").and_then(identifier);
+    match (status, code) {
+        (Some(status), Some(code)) => format!("{}: {}", status, code),
+        (_, Some(code)) => code,
+        (Some(status), None) => status,
+        (None, None) => "服务端未确认活动领取成功".into(),
+    }
+}
+
+fn parse_campaign_claim_result(body: &Value, expected_amount: i64) -> Result<(i64, bool), String> {
+    if body.get("status").and_then(Value::as_str) != Some("CLAIMED") {
+        return Err(format!("Qoder 活动领取失败：{}", campaign_failure_detail(body)));
+    }
+    let replayed = match body.get("replayed") {
+        None => false,
+        Some(value) => value.as_bool().ok_or("Qoder 领取结果 replayed 格式无效")?,
+    };
+    let amount = match body.get("benefit").filter(|benefit| !benefit.is_null()) {
+        None => expected_amount,
+        Some(benefit) => {
+            if benefit.get("kind").is_some_and(|kind| kind.as_str() != Some("CREDITS")) {
+                return Err("Qoder 领取结果不是积分福利".into());
+            }
+            benefit.get("amount").and_then(Value::as_i64)
+                .ok_or("Qoder 领取结果缺少有效积分数量")?
+        }
+    };
+    if amount != expected_amount {
+        return Err("Qoder 领取结果积分数量与目标活动不一致".into());
+    }
+    Ok((amount, replayed))
+}
 
 pub(crate) fn saved_oauth_grant_is_current(account: &QoderAccount) -> bool {
     account.auth_user_info_raw.as_ref().is_some_and(|raw| {
@@ -2331,6 +2477,235 @@ pub(crate) fn saved_oauth_grant_is_current(account: &QoderAccount) -> bool {
             && raw.get("token").and_then(Value::as_str).is_some_and(|token| token.starts_with("dt-"))
             && client_access_token_is_current(raw)
     })
+}
+
+fn campaign_session(account: &QoderAccount) -> Result<QoderAccount, String> {
+    if saved_oauth_grant_is_current(account) {
+        return Ok(account.clone());
+    }
+    Ok(qoder_account::app_owned_session(account)?.unwrap_or_else(|| account.clone()))
+}
+
+pub async fn claim_daily_reward(account_id: &str) -> Result<QoderClaimRewardResult, String> {
+    let target = qoder_account::load_account(account_id)
+        .ok_or_else(|| format!("Qoder 账号不存在: {}", account_id))?;
+    let kind = qoder_account::account_variant_kind(&target)?;
+    let variant_key = kind.provider_key();
+    let params = resolve_qoder_variant_params(variant_key)
+        .map_err(|err| format!("解析 Qoder 变体参数失败: {}", err))?;
+
+    // 当前 App 只查询额度，离线账号才可轮换；共同入口负责会话归属与切号互斥。
+    let target = if variant_supports_device_refresh(variant_key) {
+        refresh_account_token_for_variant(variant_key, account_id, false).await?
+    } else {
+        target
+    };
+    let expected = target.clone();
+    let target = campaign_session(&target)?;
+    let access_token = extract_access_token_from_account(&target)
+        .ok_or_else(|| "Qoder 账号缺少可用凭证，请重新登录".to_string())?;
+
+    let client = build_reqwest_client()?;
+    let machine_info = campaign_identity::resolve(&params, &target).await?;
+    let headers = build_qoder_claim_headers(kind, &access_token, machine_info.as_ref());
+
+    let campaigns_url = format!("{}/sash/api/v1/me/campaigns", params.openapi_base_url.trim_end_matches('/'));
+    let campaigns_resp = client
+        .get(&campaigns_url)
+        .headers(headers.clone())
+        .send()
+        .await
+        .map_err(|err| format!("获取 Qoder 活动列表网络错误: {}", err))?;
+
+    let status = campaigns_resp.status();
+    if !status.is_success() {
+        return Err(format!("获取活动列表失败 (HTTP {})", status));
+    }
+
+    let campaigns_json: Value = campaigns_resp
+        .json()
+        .await
+        .map_err(|err| format!("解析 Qoder 活动列表失败: {}", err))?;
+
+    let campaigns_arr = campaigns_json
+        .get("campaigns")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "Qoder 活动列表响应格式无效".to_string())?;
+
+    let target_campaign = require_claim_campaign(campaigns_arr, &expected)?;
+
+    let benefit_amount = target_campaign
+        .get("benefit")
+        .and_then(|b| b.get("amount"))
+        .and_then(|a| a.as_i64())
+        .ok_or_else(|| "Qoder 活动缺少可确认的积分数量".to_string())?;
+
+    let claim_status_val = target_campaign.get("claimStatus").and_then(|v| v.as_str());
+    if claim_status_val == Some("CLAIMED") {
+        let saved = qoder_account::update_reward_status(
+            account_id,
+            Some("CLAIMED".to_string()),
+            target_campaign.get("endAt").and_then(|v| v.as_i64()),
+            None,
+        )?;
+        return Ok(QoderClaimRewardResult {
+            account_id: account_id.to_string(),
+            success: true,
+            replayed: true,
+            amount: Some(benefit_amount),
+            message: format!("今日已领取过 {} 积分", benefit_amount),
+            account: Some(saved),
+        });
+    }
+
+    let campaign_id = target_campaign
+        .get("campaignId")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "Qoder 活动缺少 campaignId".to_string())?;
+
+    let claim_url = format!(
+        "{}/sash/api/v1/me/campaigns/{}/claim",
+        params.openapi_base_url.trim_end_matches('/'),
+        campaign_id
+    );
+
+    let claim_resp = client
+        .post(&claim_url)
+        .headers(headers)
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .map_err(|err| format!("领取 Qoder 积分网络请求错误: {}", err))?;
+
+    let claim_status = claim_resp.status();
+    if !claim_status.is_success() {
+        let err_body = claim_resp.text().await.unwrap_or_default();
+        let parsed_err = serde_json::from_str::<Value>(&err_body).ok();
+        let detail = parsed_err.as_ref().map(campaign_failure_detail)
+            .unwrap_or_else(|| "服务端未返回有效的业务结果".into());
+        return Err(format!("领取失败 (HTTP {}): {}", claim_status, detail));
+    }
+
+    let claim_json: Value = claim_resp
+        .json()
+        .await
+        .map_err(|err| format!("解析 Qoder 领取结果失败: {}", err))?;
+
+    let (amount, replayed) = parse_campaign_claim_result(&claim_json, benefit_amount)?;
+
+    if replayed {
+        let saved = qoder_account::update_reward_status(
+            account_id,
+            Some("CLAIMED".to_string()),
+            target_campaign.get("endAt").and_then(|v| v.as_i64()),
+            None,
+        )?;
+        Ok(QoderClaimRewardResult {
+            account_id: account_id.to_string(),
+            success: true,
+            replayed: true,
+            amount: Some(amount),
+            message: format!("今日已领取过 {} 积分", amount),
+            account: Some(saved),
+        })
+    } else {
+        if let Err(err) = refresh_account_usage(&target, &params).await {
+            logger::log_warn(&format!(
+                "[Qoder Claim] 领取成功后同步额度失败: variant={}, account_id={}, error={}",
+                variant_key, account_id, err
+            ));
+        }
+
+        let final_acc = if qoder_account::load_account(account_id).is_some() {
+            Some(qoder_account::update_reward_status(
+                account_id,
+                Some("CLAIMED".to_string()),
+                target_campaign.get("endAt").and_then(|v| v.as_i64()),
+                None,
+            )?)
+        } else {
+            None
+        };
+
+        Ok(QoderClaimRewardResult {
+            account_id: account_id.to_string(),
+            success: true,
+            replayed: false,
+            amount: Some(amount),
+            message: format!("成功领取 {} 积分！", amount),
+            account: final_acc,
+        })
+    }
+}
+
+pub async fn query_qoder_campaign_status(account_id: &str) -> Result<QoderAccount, String> {
+    let expected = qoder_account::load_account(account_id)
+        .ok_or_else(|| format!("Qoder 账号不存在: {}", account_id))?;
+    let result = async {
+        let target = campaign_session(&expected)?;
+        fetch_campaign_status(&target).await
+    }.await;
+    match result {
+        Ok((status, end)) => qoder_account::update_reward_status(account_id, status, end, Some(&expected)),
+        Err(error) => {
+            qoder_account::update_reward_query_error(account_id, error.clone(), &expected)
+                .map_err(|save_error| format!("{}；活动查询错误未保存：{}", error, save_error))?;
+            Err(error)
+        }
+    }
+}
+
+async fn fetch_campaign_status(target: &QoderAccount) -> Result<(Option<String>, Option<i64>), String> {
+    let kind = qoder_account::account_variant_kind(&target)?;
+    let variant_key = kind.provider_key();
+    let params = resolve_qoder_variant_params(variant_key)
+        .map_err(|err| format!("解析 Qoder 变体参数失败: {}", err))?;
+
+    // 活动是弱依赖：复用已保存的会话，不轮换 token，也不判定账号需要重登。
+    let access_token = extract_access_token_from_account(&target)
+        .ok_or_else(|| "Qoder 账号缺少可用凭证，无法查询活动状态".to_string())?;
+
+    let client = build_reqwest_client()?;
+    let machine_info = campaign_identity::resolve(&params, &target).await?;
+    let headers = build_qoder_claim_headers(kind, &access_token, machine_info.as_ref());
+
+    let campaigns_url = format!("{}/sash/api/v1/me/campaigns", params.openapi_base_url.trim_end_matches('/'));
+    let campaigns_resp = client
+        .get(&campaigns_url)
+        .headers(headers)
+        .send()
+        .await
+        .map_err(|err| format!("获取 Qoder 活动列表网络错误: {}", err.without_url()))?;
+
+    let status = campaigns_resp.status();
+    if !status.is_success() {
+        return Err(format!("获取活动列表失败 (HTTP {})", status));
+    }
+
+    let campaigns_json: Value = campaigns_resp
+        .json()
+        .await
+        .map_err(|err| format!("解析 Qoder 活动列表失败: {}", err))?;
+
+    let campaigns_arr = campaigns_json
+        .get("campaigns")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "Qoder 活动列表响应格式无效".to_string())?;
+    // 空列表与歧义/格式错误分开；后两者不能覆盖为「无活动」。
+    let target_campaign = select_unique_100_campaign(campaigns_arr)?;
+
+    let (claim_status, window_end_at) = if let Some(camp) = target_campaign {
+        let claim_status = camp.get("claimStatus").and_then(|v| v.as_str())
+            .ok_or_else(|| "Qoder 活动缺少领取状态".to_string())?;
+        (
+            Some(claim_status.to_string()),
+            camp.get("endAt").and_then(|v| v.as_i64()),
+        )
+    } else {
+        (Some("NONE".to_string()), None)
+    };
+
+    Ok((claim_status, window_end_at))
 }
 
 #[cfg(test)]
@@ -2525,6 +2900,94 @@ mod tests {
         })));
     }
 
+    #[test]
+    fn daily_reward_selects_only_one_campaign_with_verified_amount() {
+        let campaigns = vec![
+            serde_json::json!({"campaignId": "wrong-title", "placements": ["100 Credits"]}),
+            serde_json::json!({"campaignId": "wrong-date", "campaignKey": "20260923"}),
+            serde_json::json!({"campaignId": "view-only", "actionType": "VIEW_DETAILS", "benefit": {"amount": 100}}),
+            serde_json::json!({"campaignId": "daily-100", "actionType": "CLAIM_BENEFIT", "benefit": {"kind": "CREDITS", "amount": 100}}),
+        ];
+        assert_eq!(select_unique_100_campaign(&campaigns).unwrap().unwrap()["campaignId"].as_str(), Some("daily-100"));
+        let ambiguous = [campaigns[3].clone(), serde_json::json!({
+            "campaignId": "another-100", "actionType": "CLAIM_BENEFIT", "benefit": {"kind": "CREDITS", "amount": 100}
+        })];
+        assert!(select_unique_100_campaign(&ambiguous).is_err());
+        assert!(select_unique_100_campaign(&[]).unwrap().is_none());
+        assert!(select_unique_100_campaign(&campaigns[..3]).unwrap().is_none());
+    }
+
+    #[test]
+    fn daily_reward_ignores_closed_future_and_non_credit_campaigns() {
+        let campaigns = serde_json::json!([
+            {"campaignId":"past", "actionType":"CLAIM_BENEFIT", "benefit":{"kind":"CREDITS","amount":100}, "startAt":100,"endAt":200},
+            {"campaignId":"future", "actionType":"CLAIM_BENEFIT", "benefit":{"kind":"CREDITS","amount":100}, "startAt":600,"endAt":900},
+            {"campaignId":"voucher", "actionType":"CLAIM_BENEFIT", "benefit":{"kind":"VOUCHER","amount":100}},
+            {"campaignId":"missing-action", "benefit":{"kind":"CREDITS","amount":100}},
+            {"campaignId":"current", "actionType":"CLAIM_BENEFIT", "benefit":{"kind":"CREDITS","amount":100}, "startAt":400,"endAt":600}
+        ]);
+        let items = campaigns.as_array().unwrap();
+        assert_eq!(select_unique_100_campaign_at(items, 500).unwrap().unwrap()["campaignId"], "current");
+        assert!(select_unique_100_campaign_at(&items[..4], 500).unwrap().is_none());
+        assert_eq!(select_unique_100_campaign_at(items, 600).unwrap().unwrap()["campaignId"], "future");
+        let malformed = serde_json::json!([{"campaignId":"bad", "actionType":"CLAIM_BENEFIT", "benefit":{"kind":"CREDITS","amount":100}, "endAt":"invalid"}]);
+        assert!(select_unique_100_campaign_at(malformed.as_array().unwrap(), 500).is_err());
+    }
+
+    #[test]
+    fn campaign_business_failure_is_not_a_successful_claim() {
+        for body in [
+            serde_json::json!({"status":"FAILED", "failureCode":"SAME_PERSON_ALREADY_CLAIMED", "benefit":{"amount":100}}),
+            serde_json::json!({"status":"FAILED", "replayed":true}),
+            serde_json::json!({"replayed":true}),
+            serde_json::json!({"success":true}),
+        ] {
+            assert!(parse_campaign_claim_result(&body, 100).is_err());
+        }
+        let failure = parse_campaign_claim_result(&serde_json::json!({
+            "status":"FAILED", "failureCode":"SAME_PERSON_ALREADY_CLAIMED",
+            "message":"dt-synthetic-private-response"
+        }), 100).unwrap_err();
+        assert!(failure.contains("SAME_PERSON_ALREADY_CLAIMED"));
+        assert!(!failure.contains("synthetic-private-response"));
+        assert_eq!(parse_campaign_claim_result(&serde_json::json!({
+            "status":"CLAIMED", "benefit":{"kind":"CREDITS","amount":100}
+        }), 100).unwrap(), (100, false));
+        assert_eq!(parse_campaign_claim_result(&serde_json::json!({
+            "status":"CLAIMED", "replayed":true
+        }), 100).unwrap(), (100, true));
+        assert!(parse_campaign_claim_result(&serde_json::json!({
+            "status":"CLAIMED", "benefit":{"amount":200}
+        }), 100).is_err());
+    }
+
+    #[test]
+    fn current_oauth_campaign_grant_is_not_replaced_by_native_app_session() {
+        let mut account = t7_frozen_account_fixture();
+        account.variant = Some("qoder_app".into());
+        account.auth_user_info_raw = Some(serde_json::json!({
+            "id": account.user_id, "token":"dt-new-oauth-fixture",
+            "expireTime": (chrono::Utc::now().timestamp_millis() + 600_000).to_string()
+        }));
+        // The production selector returns before reading any native App credentials.
+        let selected = campaign_session(&account).unwrap();
+        assert_eq!(extract_access_token_from_account(&selected).as_deref(), Some("dt-new-oauth-fixture"));
+        account.auth_user_info_raw.as_mut().unwrap()["schemaVersion"] = Value::from(1);
+        assert!(!saved_oauth_grant_is_current(&account));
+    }
+
+    #[tokio::test]
+    async fn poll_network_errors_do_not_expose_pkce_query() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+        let error = poll_device_token_outcome(&build_reqwest_client().unwrap(), &base,
+            "synthetic-private-nonce", "synthetic-private-verifier", "S256", "Qoder AI")
+            .await.unwrap_err();
+        assert!(!error.contains("synthetic-private-nonce"));
+        assert!(!error.contains("synthetic-private-verifier"));
+        assert!(!error.contains("verifier="));
+    }
 
     #[test]
     fn imported_app_refresh_updates_client_expiry_fields() {
@@ -3273,7 +3736,10 @@ mod tests {
                     "addOnQuota": {"total": 200, "used": 100, "remaining": 100, "percentage": 0.5, "unit": "credits"}
                 }
             })),
-            web_session_cookie: None,
+            reward_claim_status: None,
+            reward_window_end_at: None,
+            reward_status_updated_at: None,
+            reward_query_last_error: None,
             created_at: 1790230239000,
             last_used: 1790230239000,
         }
@@ -3798,6 +4264,42 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn qoder_claim_headers_match_reference_client() {
+        for kind in [QoderVariantKind::Qoder, QoderVariantKind::QoderCnApp] {
+            let headers = build_qoder_claim_headers(kind, "dt-SYNTH-TOKEN-123", None);
+            assert_eq!(headers["authorization"], "Bearer dt-SYNTH-TOKEN-123");
+            assert_eq!(headers["cosy-clienttype"], "10");
+            assert_eq!(headers["user-agent"], "Qoder");
+            assert_eq!(headers["content-type"], "application/json");
+            assert!(!headers.contains_key("origin"));
+            assert!(!headers.contains_key("referer"));
+            assert!(!headers.contains_key("cosy-machinetoken"));
+            if !kind.is_cn() { assert_eq!(headers["cosy-version"], "0.4.3"); }
+        }
+    }
+
+    #[test]
+    fn international_campaign_headers_include_real_identity_tuple() {
+        let machine = QoderMachineInfo {
+            token: "fixture-native-token".into(), machine_type: Some("fixture-native-type".into()),
+            machine_code: Some("fixture-native-code".into()), machine_id: Some("fixture-machine-id".into()),
+            machine_hostname: Some("fixture-host".into()), machine_os: Some("aarch64_darwin".into()),
+            cosy_version: Some("0.4.3".into()),
+        };
+        for kind in [QoderVariantKind::Qoder, QoderVariantKind::QoderApp] {
+            let headers = build_qoder_claim_headers(kind, "dt-fixture", Some(&machine));
+            for (key, value) in [
+                ("cosy-machinetoken", "fixture-native-token"),
+                ("cosy-machinetype", "fixture-native-type"),
+                ("cosy-machinecode", "fixture-native-code"),
+                ("cosy-machineid", "fixture-machine-id"),
+                ("cosy-machinehostname", "fixture-host"),
+                ("cosy-machineos", "aarch64_darwin"),
+                ("cosy-version", "0.4.3"), ("cosy-clienttype", "10"), ("user-agent", "Qoder"),
+            ] { assert_eq!(headers[key], value, "{key}"); }
+        }
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn login_entries_use_region_specific_qoder_authorization() {
