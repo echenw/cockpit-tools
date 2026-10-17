@@ -1,4 +1,5 @@
 import { useQoderCurrentAccountIds } from '../hooks/useQoderCurrentAccountIds';
+import { useQoderRewardClock } from '../hooks/useQoderRewardClock';
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowDownWideNarrow,
@@ -14,6 +15,7 @@ import {
   KeyRound,
   LayoutGrid,
   List,
+  Gift,
   Play,
   Plus,
   RefreshCw,
@@ -29,6 +31,8 @@ import { confirm as confirmDialog } from '@tauri-apps/plugin-dialog';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { useTranslation } from 'react-i18next';
 import { TagEditModal } from '../components/TagEditModal';
+import { QoderBatchClaimModal } from '../components/QoderBatchClaimModal';
+import '../components/QoderBatchClaimModal.css';
 import { useActionBubble } from '../components/ActionBubble';
 import { ExportJsonModal } from '../components/ExportJsonModal';
 import { ModalErrorMessage, useModalErrorState } from '../components/ModalErrorMessage';
@@ -46,7 +50,7 @@ import {
   PlatformOverviewTabsHeader,
 } from '../components/platform/PlatformOverviewTabsHeader';
 import { QoderInstancesContent } from './QoderInstancesPage';
-import { useQoderAccountStore } from '../stores/useQoderAccountStore';
+import { checkUnknownQoderRewardStatuses, QODER_REWARD_RETRY_DELAY_MS, useQoderAccountStore } from '../stores/useQoderAccountStore';
 import * as qoderService from '../services/qoderService';
 import {
   QoderAccount,
@@ -59,6 +63,7 @@ import {
   getQoderSubscriptionInfo,
   getQoderUsage,
   hasQoderQuotaData,
+  resolveQoderRewardStatus,
   shouldShowQoderSubscriptionReset,
 } from '../types/qoder';
 import {
@@ -340,6 +345,9 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
   const { showBubble, renderBubble } = useActionBubble();
   const exportAnchorRef = useRef<HTMLElement | null>(null);
   const [message, setMessage] = useState<{ text: string; tone?: 'error' } | null>(null);
+  const [claimingRewardIds, setClaimingRewardIds] = useState<Set<string>>(() => new Set());
+  const claimingRewardIdsRef = useRef<Set<string>>(new Set());
+  const [showBatchClaimModal, setShowBatchClaimModal] = useState<boolean>(false);
   const [refreshing, setRefreshing] = useState<string | null>(null);
   const [refreshingAll, setRefreshingAll] = useState(false);
   const [injecting, setInjecting] = useState<string | null>(null);
@@ -625,6 +633,21 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
     };
   }, [syncPrivacyMode]);
 
+  const rewardNow = useQoderRewardClock(accounts);
+
+  // 当账号数据变化或活动日窗过期时，静默查询最新活动状态。
+  useEffect(() => {
+    const check = () => {
+      void checkUnknownQoderRewardStatuses(accounts).catch((err) => {
+        console.warn('[Qoder Reward] 静默同步活动状态失败:', err);
+      });
+    };
+    check();
+    // Unresolved statuses retry while this page is mounted; pending queries stay deduplicated.
+    const timer = window.setInterval(check, QODER_REWARD_RETRY_DELAY_MS);
+    return () => window.clearInterval(timer);
+  }, [accounts, rewardNow]);
+
   const currentAccountId = currentIds[activeVariant];
 
   const startImportAutoClose = useCallback((seconds = IMPORT_AUTO_CLOSE_SECONDS) => {
@@ -873,6 +896,10 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
   }, [filteredAccounts, groupByTag, tagFilter]);
 
   const filteredIds = useMemo(() => filteredAccounts.map((item) => item.id), [filteredAccounts]);
+  const claimableCount = useMemo(
+    () => filteredAccounts.filter((item) => resolveQoderRewardStatus(item, rewardNow) === 'claimable').length,
+    [filteredAccounts, rewardNow],
+  );
   const pagination = usePagination({
     items: filteredAccounts,
     storageKey: buildPaginationPageSizeStorageKey('Qoder'),
@@ -931,7 +958,13 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
       setRefreshing(accountId);
       try {
         try {
-          await qoderService.refreshQoderToken(accountId, activeVariant);
+          const refreshed = await qoderService.refreshQoderToken(accountId, activeVariant);
+          if (refreshed.reward_query_last_error) {
+            showBubble(anchor, t('qoder.claimReward.refreshPartial', '账号已刷新，积分活动查询失败：{{error}}', {
+              error: refreshed.reward_query_last_error,
+            }), 'info');
+            return;
+          }
         } finally {
           await store.fetchAccounts({ silent: true });
         }
@@ -960,13 +993,22 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
           : document.getElementById('qoder-btn-refresh-all');
       setRefreshingAll(true);
       try {
+        let refreshed = 0;
         try {
-          await qoderService.refreshAllQoderTokens(activeVariant);
+          refreshed = await qoderService.refreshAllQoderTokens(activeVariant);
         } finally {
           await store.fetchAccounts();
         }
         const state = useQoderAccountStore.getState();
         if (state.error) throw new Error(state.error);
+        const affected = state.accounts.filter((account) => qoderAccountSupportsVariant(account, activeVariant));
+        const campaignFailed = affected.filter((account) => account.reward_query_last_error).length;
+        if (campaignFailed > 0 || refreshed < affected.length) {
+          showBubble(anchor, t('qoder.claimReward.refreshAllPartial', '已刷新 {{refreshed}}/{{total}} 个账号，其中 {{campaignFailed}} 个积分活动查询失败', {
+            refreshed, total: affected.length, campaignFailed,
+          }), 'info');
+          return;
+        }
         showBubble(anchor, t('accounts.refreshAllSuccess', '已刷新全部账号'), 'success');
       } catch (error) {
         showBubble(
@@ -981,6 +1023,95 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
       }
     },
     [activeVariant, refreshingAll, showBubble, store, t],
+  );
+
+  const handleRewardAction = useCallback(
+    async (accountId: string, anchorEl?: HTMLElement | null) => {
+      if (claimingRewardIdsRef.current.has(accountId)) return;
+      const target = useQoderAccountStore.getState().accounts.find((a) => a.id === accountId);
+      if (!target) return;
+      const rewardStatus = resolveQoderRewardStatus(target);
+      const checkingOnly = rewardStatus === 'none' || rewardStatus === 'unknown';
+      claimingRewardIdsRef.current.add(accountId);
+      setClaimingRewardIds(new Set(claimingRewardIdsRef.current));
+      const email = getQoderAccountDisplayEmail(target);
+      const anchor =
+        (anchorEl && document.contains(anchorEl))
+          ? anchorEl
+          : (document.getElementById(`qoder-btn-reward-${accountId}`) ??
+             document.getElementById(`qoder-list-btn-reward-${accountId}`));
+      try {
+        if (checkingOnly) {
+          // Reuse the saved grant and the backend's account-scoped UMID identity.
+          // Bypass the cached NONE status without entering the claim workflow.
+          const checked = await qoderService.checkQoderRewardStatus(accountId);
+          await store.fetchAccounts({ silent: true });
+          const reloadError = useQoderAccountStore.getState().error;
+          if (reloadError) throw new Error(reloadError);
+          const status = resolveQoderRewardStatus(checked);
+          const message = status === 'claimable'
+            ? t('qoder.claimReward.recheckFound', '已查到每日 100 积分活动，请再次点击领取')
+            : status === 'claimed'
+              ? t('qoder.claimReward.alreadyClaimedTip', '今日已领取 100 积分')
+              : status === 'none'
+                ? t('qoder.claimReward.recheckNone', '查询完成，服务端当前未返回可领取的 100 积分活动')
+                : t('qoder.claimReward.recheckUnknown', '查询完成，活动状态暂未确认，可稍后重试');
+          showBubble(anchor, message, status === 'claimable' ? 'success' : 'info');
+          return;
+        }
+        // 失败前后端也可能已保存无活动、凭据过期或部分刷新结果。
+        const res = await qoderService.claimQoderReward(accountId).finally(
+          () => store.fetchAccounts({ silent: true }),
+        );
+        if (res.success && !res.replayed) {
+          showBubble(
+            anchor,
+            res.amount == null
+              ? `${maskAccountText(email)}: ${t('common.success', '成功')}`
+              : t('qoder.claimReward.claimSuccess', '账号 {{email}} 成功领取 {{amount}} 积分！', {
+                  email: maskAccountText(email),
+                  amount: res.amount,
+                }),
+            'success',
+          );
+        } else if (res.success && res.replayed) {
+          showBubble(
+            anchor,
+            t('qoder.claimReward.alreadyClaimed', '账号 {{email}} 今日已领取过积分', {
+              email: maskAccountText(email),
+            }),
+            'info',
+          );
+        } else {
+          showBubble(
+            anchor,
+            t('qoder.claimReward.claimFailed', '账号 {{email}} 领取积分失败：{{error}}', {
+              email: maskAccountText(email),
+              error: res.message || '未知错误',
+            }),
+            'error',
+          );
+        }
+      } catch (error) {
+        showBubble(
+          anchor,
+          checkingOnly
+            ? t('qoder.claimReward.recheckFailed', '查询积分活动失败：{{error}}', {
+                error: String(error).replace(/^Error:\s*/, ''),
+              })
+            : t('qoder.claimReward.claimFailed', '账号 {{email}} 领取积分失败：{{error}}', {
+                email: maskAccountText(email),
+                error: String(error).replace(/^Error:\s*/, ''),
+              }),
+          'error',
+        );
+        if (checkingOnly) await store.fetchAccounts({ silent: true });
+      } finally {
+        claimingRewardIdsRef.current.delete(accountId);
+        setClaimingRewardIds(new Set(claimingRewardIdsRef.current));
+      }
+    },
+    [maskAccountText, showBubble, store, t],
   );
 
   const handleSwitch = useCallback(
@@ -1739,6 +1870,12 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
         const isRefreshing = refreshing === account.id;
         const isInjecting = injecting === account.id;
         const quotaError = account.quota_query_last_error?.trim();
+        const rewardStatus = resolveQoderRewardStatus(account, rewardNow);
+        const rewardActionTitle = rewardStatus === 'claimed'
+          ? t('qoder.claimReward.alreadyClaimedTip', '今日已领取 100 积分')
+          : rewardStatus === 'none' || rewardStatus === 'unknown'
+            ? t('qoder.claimReward.recheckTitle', '重新查询积分活动（无需重新授权）')
+            : t('qoder.claimReward.buttonTitle', '领取每日 100 积分');
 
         return (
           <div
@@ -1762,7 +1899,33 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
                   {t('common.shared.quota.queryFailed', '配额查询失败')}
                 </span>
               )}
-
+              {rewardStatus === 'claimable' && (
+                <span
+                  className="status-pill reward-status-pill claimable"
+                  title={t('qoder.claimReward.statusClaimableTip', '今日可领 100 积分')}
+                >
+                  <Gift size={11} />
+                  {t('qoder.claimReward.badgeClaimable', '可领100')}
+                </span>
+              )}
+              {rewardStatus === 'claimed' && (
+                <span
+                  className="status-pill reward-status-pill claimed"
+                  title={t('qoder.claimReward.statusClaimedTip', '今日已领取 100 积分')}
+                >
+                  <Gift size={11} />
+                  {t('qoder.claimReward.badgeClaimed', '已领100')}
+                </span>
+              )}
+              {rewardStatus === 'none' && (
+                <span
+                  className="status-pill reward-status-pill none"
+                  title={t('qoder.claimReward.statusNoneTip', '账号暂无活动/不可领取')}
+                >
+                  <Gift size={11} />
+                  {t('qoder.claimReward.badgeNone', '无活动')}
+                </span>
+              )}
               <span className={`tier-badge ${planClass} raw-value`}>{plan}</span>
               {isCurrent && <span className="current-tag">{t('accounts.status.current', '当前')}</span>}
             </div>
@@ -1800,7 +1963,29 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
                 >
                   {isInjecting ? <RotateCw size={14} className="loading-spinner" /> : <Play size={14} />}
                 </button>
-
+                <button
+                  id={`qoder-btn-reward-${account.id}`}
+                  className={`card-action-btn reward-btn ${
+                    rewardStatus === 'claimed'
+                      ? 'is-claimed'
+                      : rewardStatus === 'none'
+                        ? 'is-none'
+                        : rewardStatus === 'claimable'
+                          ? 'has-reward'
+                          : ''
+                  }`}
+                  onClick={(e) => void handleRewardAction(account.id, e.currentTarget)}
+                  title={rewardActionTitle}
+                  aria-label={rewardActionTitle}
+                  aria-busy={claimingRewardIds.has(account.id)}
+                  disabled={claimingRewardIds.has(account.id) || isInjecting || deleting}
+                >
+                  {claimingRewardIds.has(account.id) ? (
+                    <RotateCw size={14} className="loading-spinner" />
+                  ) : (
+                    <Gift size={14} />
+                  )}
+                </button>
                 <button
                   id={`qoder-btn-tag-${account.id}`}
                   className="card-action-btn"
@@ -1843,10 +2028,12 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
         );
       }),
     [
+      claimingRewardIds,
       currentAccountId,
       deleting,
       exportModal.preparing,
       exportModal.saving,
+      handleRewardAction,
       handleDeleteAccounts,
       handleExportByIds,
       handleRefresh,
@@ -1856,6 +2043,7 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
       refreshing,
       renderQuotaSection,
       resolveUpdatedText,
+      rewardNow,
       selected,
       t,
       toggleSelect,
@@ -1873,6 +2061,12 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
         const isRefreshing = refreshing === account.id;
         const isInjecting = injecting === account.id;
         const quotaError = account.quota_query_last_error?.trim();
+        const rewardStatus = resolveQoderRewardStatus(account, rewardNow);
+        const rewardActionTitle = rewardStatus === 'claimed'
+          ? t('qoder.claimReward.alreadyClaimedTip', '今日已领取 100 积分')
+          : rewardStatus === 'none' || rewardStatus === 'unknown'
+            ? t('qoder.claimReward.recheckTitle', '重新查询积分活动（无需重新授权）')
+            : t('qoder.claimReward.buttonTitle', '领取每日 100 积分');
         return (
           <tr key={groupKey ? `${groupKey}-${account.id}` : account.id} className={isCurrent ? 'current' : undefined}>
             <td>
@@ -1886,7 +2080,33 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
               <div className="account-cell">
                 <div className="account-main-line">
                   {maskAccountText(getQoderAccountDisplayEmail(account))}
-
+                  {rewardStatus === 'claimable' && (
+                    <span
+                      className="status-pill reward-status-pill claimable"
+                      title={t('qoder.claimReward.statusClaimableTip', '今日可领 100 积分')}
+                    >
+                      <Gift size={11} />
+                      {t('qoder.claimReward.badgeClaimable', '可领100')}
+                    </span>
+                  )}
+                  {rewardStatus === 'claimed' && (
+                    <span
+                      className="status-pill reward-status-pill claimed"
+                      title={t('qoder.claimReward.statusClaimedTip', '今日已领取 100 积分')}
+                    >
+                      <Gift size={11} />
+                      {t('qoder.claimReward.badgeClaimed', '已领100')}
+                    </span>
+                  )}
+                  {rewardStatus === 'none' && (
+                    <span
+                      className="status-pill reward-status-pill none"
+                      title={t('qoder.claimReward.statusNoneTip', '账号暂无活动/不可领取')}
+                    >
+                      <Gift size={11} />
+                      {t('qoder.claimReward.badgeNone', '无活动')}
+                    </span>
+                  )}
                 </div>
                 {quotaError && (
                   <div className="account-sub-line">
@@ -1960,7 +2180,29 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
                 >
                   {isInjecting ? <RotateCw size={14} className="loading-spinner" /> : <Play size={14} />}
                 </button>
-
+                <button
+                  id={`qoder-list-btn-reward-${account.id}`}
+                  className={`action-btn reward-btn ${
+                    rewardStatus === 'claimed'
+                      ? 'is-claimed'
+                      : rewardStatus === 'none'
+                        ? 'is-none'
+                        : rewardStatus === 'claimable'
+                          ? 'has-reward'
+                          : ''
+                  }`}
+                  onClick={(e) => void handleRewardAction(account.id, e.currentTarget)}
+                  title={rewardActionTitle}
+                  aria-label={rewardActionTitle}
+                  aria-busy={claimingRewardIds.has(account.id)}
+                  disabled={claimingRewardIds.has(account.id) || isInjecting || deleting}
+                >
+                  {claimingRewardIds.has(account.id) ? (
+                    <RotateCw size={14} className="loading-spinner" />
+                  ) : (
+                    <Gift size={14} />
+                  )}
+                </button>
                 <button
                   id={`qoder-list-btn-tag-${account.id}`}
                   className="action-btn"
@@ -1994,10 +2236,12 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
         );
       }),
     [
+      claimingRewardIds,
       currentAccountId,
       deleting,
       exportModal.preparing,
       exportModal.saving,
+      handleRewardAction,
       handleDeleteAccounts,
       handleExportByIds,
       handleRefresh,
@@ -2006,6 +2250,7 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
       maskAccountText,
       refreshing,
       resolveQuotaDisplay,
+      rewardNow,
       selected,
       t,
       toggleSelect,
@@ -2155,6 +2400,7 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
             )}
           </div>
 
+
           {message && (
             <div className={`message-bar ${message.tone === 'error' ? 'error' : 'success'}`}>
               {message.text}
@@ -2298,7 +2544,15 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
               >
                 <Plus size={14} />
               </button>
-
+              <button
+                className={`btn btn-secondary icon-only reward-btn ${claimableCount > 0 ? 'has-reward' : ''}`}
+                onClick={() => setShowBatchClaimModal(true)}
+                disabled={filteredAccounts.length === 0 || claimingRewardIds.size > 0}
+                title={t('qoder.claimReward.batchTitle', '一键领取每日 100 积分')}
+              >
+                <Gift size={14} />
+                {claimableCount > 0 && <span className="reward-count-badge">{claimableCount}</span>}
+              </button>
               <button
                 id="qoder-btn-refresh-all"
                 className="btn btn-secondary icon-only"
@@ -2634,6 +2888,17 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
         onOpenSavedDirectory={exportModal.openSavedDirectory}
         onCopySavedPath={exportModal.copySavedPath}
       />
+
+      {showBatchClaimModal && (
+        <QoderBatchClaimModal
+          accounts={filteredAccounts}
+          onClose={() => setShowBatchClaimModal(false)}
+          onFinished={async () => {
+            await store.fetchAccounts();
+          }}
+          maskAccountText={maskAccountText}
+        />
+      )}
 
       {renderBubble()}
     </div>

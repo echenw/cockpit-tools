@@ -116,6 +116,14 @@ pub struct QoderAccount {
     pub usage_updated_at: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reward_claim_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reward_window_end_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reward_status_updated_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reward_query_last_error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_user_info_raw: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -212,6 +220,10 @@ pub struct QoderAccountSummary {
     pub plan_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reward_claim_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reward_window_end_at: Option<i64>,
     pub created_at: i64,
     pub last_used: i64,
 }
@@ -255,13 +267,33 @@ impl QoderAccount {
             user_id: self.user_id.clone(),
             plan_type: self.plan_type_for_display().map(str::to_string),
             tags: self.tags.clone(),
+            reward_claim_status: self.reward_claim_status.clone(),
+            reward_window_end_at: self.reward_window_end_at,
             created_at: self.created_at,
             last_used: self.last_used,
         }
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QoderClaimRewardResult {
+    pub account_id: String,
+    pub success: bool,
+    pub replayed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub amount: Option<i64>,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<QoderAccount>,
+}
 
+impl QoderClaimRewardResult {
+    pub fn for_ipc(mut self) -> Self {
+        self.account = self.account.map(QoderAccount::for_ipc);
+        self
+    }
+}
 
 #[cfg(test)]
 mod tests {

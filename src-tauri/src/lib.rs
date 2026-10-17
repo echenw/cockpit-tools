@@ -700,6 +700,9 @@ pub fn run() {
 
             apply_startup_minimized(&app.handle());
             modules::workbuddy_auto_checkin::start_auto_checkin_scheduler(app.handle().clone());
+            modules::qoder_auto_checkin::start_scheduler(
+                app.handle().clone(), commands::qoder::run_reward_claim,
+            );
 
             Ok(())
         })
@@ -1416,6 +1419,15 @@ pub fn run() {
             commands::qoder::refresh_all_qoder_tokens,
             commands::qoder::inject_qoder_account,
             commands::qoder::update_qoder_account_tags,
+            commands::qoder::claim_qoder_reward,
+            commands::qoder::start_qoder_reward_batch,
+            commands::qoder::cancel_qoder_reward_batch,
+            commands::qoder::claim_qoder_batch_reward,
+            commands::qoder::get_qoder_auto_checkin_settings,
+            commands::qoder::recover_qoder_auto_checkin_settings,
+            commands::qoder::save_qoder_auto_checkin_settings,
+            commands::qoder::check_qoder_reward_status,
+            commands::qoder::batch_check_qoder_reward_statuses,
             // Zed Commands
             commands::zed::list_zed_accounts,
             commands::zed::delete_zed_account,

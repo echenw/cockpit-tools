@@ -8,6 +8,8 @@ import {
   getQoderPlanBadge,
   getQoderSubscriptionInfo,
   hasQoderQuotaData,
+  resolveQoderRewardStatus,
+  getQoderRewardStatusExpiryMs,
   type QoderAccount,
 } from "./qoder.ts";
 
@@ -110,6 +112,87 @@ test("uses the provider's usage userType only when no explicit plan exists", () 
     ...account,
     auth_credit_usage_raw: {},
   }), "UNKNOWN");
+});
+
+test("reward windows expire in either seconds or milliseconds", () => {
+  const pastMs = Date.now() - 60_000;
+  const futureMs = Date.now() + 60_000;
+  for (const status of ["CLAIMED", "CLAIMABLE"]) {
+    for (const endAt of [pastMs, Math.floor(pastMs / 1000)]) {
+      assert.equal(resolveQoderRewardStatus(makeAccount({
+        reward_claim_status: status,
+        reward_window_end_at: endAt,
+      })), "unknown");
+    }
+    for (const endAt of [futureMs, Math.floor(futureMs / 1000)]) {
+      assert.equal(resolveQoderRewardStatus(makeAccount({
+        reward_claim_status: status,
+        reward_window_end_at: endAt,
+      })), status === "CLAIMED" ? "claimed" : "claimable");
+    }
+  }
+});
+
+test("campaign query failure never presents a cached NONE as a confirmed result", () => {
+  const now = Date.now();
+  const account = makeAccount({
+    reward_claim_status: "NONE",
+    reward_status_updated_at: Math.floor(now / 1000),
+    reward_query_last_error: "fixture network failure",
+  });
+  assert.equal(resolveQoderRewardStatus(account, now), "unknown");
+  assert.equal(resolveQoderRewardStatus({ ...account, reward_query_last_error: null }, now), "none");
+});
+
+test("missing reward window ends expire at 10:00 UTC+8 regardless of system timezone", () => {
+  // Use absolute instants, not local Date constructors, so non-UTC+8 systems
+  // expose an accidental setHours/setDate implementation.
+  const yesterdayAfterReset = Date.parse("2026-10-11T02:05:00Z");
+  const beforeReset = Date.parse("2026-10-12T01:59:59Z");
+  const atReset = Date.parse("2026-10-12T02:00:00Z");
+  const afterReset = Date.parse("2026-10-12T02:05:00Z");
+  const nextReset = Date.parse("2026-10-13T02:00:00Z");
+
+  for (const status of ["NONE", "CLAIMED", "UNCLAIMED", "CLAIMABLE"]) {
+    const account = makeAccount({
+      reward_claim_status: status,
+      reward_window_end_at: null,
+      reward_status_updated_at: Math.floor(yesterdayAfterReset / 1000),
+    });
+    const expected = status === "NONE" ? "none" : status === "CLAIMED" ? "claimed" : "claimable";
+    assert.equal(getQoderRewardStatusExpiryMs(account), atReset);
+    assert.equal(resolveQoderRewardStatus(account, beforeReset), expected);
+    assert.equal(resolveQoderRewardStatus(account, atReset), "unknown");
+
+    const refreshed = { ...account, reward_status_updated_at: afterReset };
+    assert.equal(getQoderRewardStatusExpiryMs(refreshed), nextReset);
+    assert.equal(resolveQoderRewardStatus(refreshed, afterReset), expected);
+    assert.equal(resolveQoderRewardStatus(refreshed, nextReset), "unknown");
+  }
+});
+
+test("UTC+8 activity boundary stays fixed across foreign DST changes", () => {
+  const checkedAt = Date.parse("2026-03-08T00:00:00Z"); // LA enters DST that day
+  const account = makeAccount({
+    reward_claim_status: "NONE",
+    reward_status_updated_at: checkedAt / 1000,
+  });
+  assert.equal(
+    getQoderRewardStatusExpiryMs(account),
+    Date.parse("2026-03-08T02:00:00Z"),
+  );
+  assert.equal(resolveQoderRewardStatus(account, Date.parse("2026-03-08T02:00:00Z")), "unknown");
+});
+
+test("an undated reward status must be refreshed, but an explicit server end remains authoritative", () => {
+  const now = new Date(2026, 9, 12, 15).getTime();
+  for (const status of ["NONE", "CLAIMED", "UNCLAIMED"]) {
+    assert.equal(resolveQoderRewardStatus(makeAccount({ reward_claim_status: status }), now), "unknown");
+  }
+  assert.equal(resolveQoderRewardStatus(makeAccount({
+    reward_claim_status: "UNCLAIMED",
+    reward_window_end_at: now + 60_000,
+  }), now), "claimable");
 });
 
 test("returns the trimmed email when a real email exists", () => {

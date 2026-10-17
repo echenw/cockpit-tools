@@ -1,7 +1,7 @@
 use std::time::Instant;
 use tauri::{AppHandle, Emitter};
 
-use crate::models::qoder::{QoderAccount, QoderOAuthStartResponse};
+use crate::models::qoder::{QoderAccount, QoderClaimRewardResult, QoderOAuthStartResponse};
 use crate::modules::qoder_variant::QoderVariantKind;
 use crate::modules::{logger, qoder_account, qoder_oauth};
 
@@ -41,27 +41,8 @@ async fn refresh_account_by_variant(
     resolve_refresh_variant(source.provider_key(), requested_variant)?;
     let variant = requested_variant.map(|raw| resolve_variant_key(Some(raw)))
         .transpose()?.unwrap_or_else(|| source.provider_key().to_string());
-    let refreshed_account = {
-        let refreshed =
-            qoder_oauth::refresh_account_token_for_variant(&variant, account_id, false).await?;
-        if !qoder_oauth::variant_supports_job_line(&variant) {
-            refreshed
-        } else {
-            // App 系 device 行已落库；job 行失败不回滚 device 会话，仅告警。
-            match qoder_oauth::refresh_account_token_for_variant(&variant, account_id, true).await {
-                Ok(job_account) => job_account,
-                Err(err) => {
-                    logger::log_warn(&format!(
-                        "[Qoder Refresh] App jobToken 刷新失败，保留 device 会话: variant={}, account_id={}, error={}",
-                        variant, account_id, err
-                    ));
-                    refreshed
-                }
-            }
-        }
-    };
-
-    Ok(refreshed_account)
+    let account_with_campaign = qoder_oauth::refresh_account_and_campaigns(&variant, account_id).await?;
+    Ok(account_with_campaign)
 }
 
 /// 仅 CN IDE 保留刷新写回；App 由官方客户端管理当前会话，禁止后台热写认证文件。
@@ -490,16 +471,19 @@ pub async fn inject_qoder_account(
             // Recheck under a fresh guard after closing/saving its final session below.
             let _preflight_guard = qoder_oauth::prepare_account_for_launch(kind, &account_id).await?;
         }
+    } else {
+        let target = qoder_account::load_account(&account_id).ok_or("Qoder 账号已被删除")?;
+        // 原生 IDE 持有的凭据必须先关闭回收；其他账号仍可提前校验。
+        // 这里只做预检查，不跨越旧账号回收持有目标账号锁。
+        if !target.native_ide_session {
+            let _preflight_guard = qoder_oauth::prepare_account_for_launch(kind, &account_id).await?;
+        }
     }
-    // IDE preparation keeps the account locked through injection and launch.
-    let mut account_guard = if !kind.is_app() {
-        Some(qoder_oauth::prepare_account_for_launch(kind, &account_id).await?)
-    } else { None };
     let was_running = kind.is_app()
         && crate::modules::process::resolve_qoder_pid_for_variant_checked(kind, None, Some(&data_dir))?.is_some();
     crate::modules::process::close_qoder_variant_instances(kind, &[data_dir], 20)
         .map_err(|err| format!("{} 未能关闭，切号已中止: {}", kind.display_name(), err))?;
-    if let Some(dir) = &app_dir {
+    let _account_guard = if let Some(dir) = &app_dir {
         // Save the official client's final credentials before preparing another projection.
         let prepared = async {
             if let Some(previous) = qoder_account::read_official_login_candidate(kind, dir)? {
@@ -509,11 +493,13 @@ pub async fn inject_qoder_account(
             }
             qoder_oauth::prepare_account_for_launch(kind, &account_id).await
         }.await;
-        account_guard = Some(prepared.map_err(|error| recover_closed_app_switch(
+        prepared.map_err(|error| recover_closed_app_switch(
             was_running, error.into(), || crate::modules::process::launch_qoder_variant_client(kind),
-        ))?);
-    }
-    let _account_guard = account_guard;
+        ))?
+    } else {
+        qoder_account::reconcile_default_ide_session(kind).await?;
+        qoder_oauth::prepare_account_for_launch(kind, &account_id).await?
+    };
     let injection_error = if kind.is_app() {
         match qoder_account::inject_to_qoder_app_checked(kind, &account_id) {
             Ok(()) => None,
@@ -564,6 +550,101 @@ pub fn update_qoder_account_tags(
     qoder_account::update_account_tags(&account_id, tags).map(QoderAccount::for_ipc)
 }
 
+#[tauri::command]
+pub async fn claim_qoder_reward(
+    account_id: String,
+) -> Result<QoderClaimRewardResult, String> {
+    run_reward_claim(account_id, None).await?
+        .ok_or_else(|| "签到任务已取消".to_string())
+}
+
+pub(crate) async fn run_reward_claim(
+    account_id: String,
+    scheduled_date: Option<String>,
+) -> Result<Option<QoderClaimRewardResult>, String> {
+    run_reward_claim_with_cancellation(account_id, scheduled_date, None).await
+}
+
+#[tauri::command]
+pub fn start_qoder_reward_batch() -> Result<String, String> {
+    crate::modules::qoder_auto_checkin::start_manual_batch()
+}
+
+#[tauri::command]
+pub fn cancel_qoder_reward_batch(batch_id: String) -> Result<(), String> {
+    crate::modules::qoder_auto_checkin::cancel_manual_batch(&batch_id)
+}
+
+#[tauri::command]
+pub async fn claim_qoder_batch_reward(
+    account_id: String,
+    batch_id: String,
+) -> Result<Option<QoderClaimRewardResult>, String> {
+    let Some(cancellation) = crate::modules::qoder_auto_checkin::manual_batch_cancellation(&batch_id)? else {
+        return Ok(None);
+    };
+    run_reward_claim_with_cancellation(account_id, None, Some(cancellation)).await
+}
+
+async fn run_reward_claim_with_cancellation(
+    account_id: String,
+    scheduled_date: Option<String>,
+    cancellation: Option<crate::modules::qoder_auto_checkin::ClaimCancellation>,
+) -> Result<Option<QoderClaimRewardResult>, String> {
+    let Some(_permit) = crate::modules::qoder_auto_checkin::acquire_claim_slot(
+        &account_id, scheduled_date.as_deref(), cancellation,
+    ).await? else {
+        return Ok(None);
+    };
+    let before = qoder_account::load_account(&account_id);
+    let result = qoder_oauth::claim_daily_reward(&account_id).await;
+    write_back_current_account_if_auth_changed(before, &account_id).await;
+    let result = result?;
+    Ok(Some(result.for_ipc()))
+}
+
+#[tauri::command]
+pub fn get_qoder_auto_checkin_settings() -> Result<crate::modules::qoder_auto_checkin::QoderAutoCheckinSettings, String> {
+    crate::modules::qoder_auto_checkin::get_settings()
+}
+
+#[tauri::command]
+pub fn recover_qoder_auto_checkin_settings() -> Result<crate::modules::qoder_auto_checkin::QoderAutoCheckinSettings, String> {
+    crate::modules::qoder_auto_checkin::recover_settings()
+}
+
+#[tauri::command]
+pub fn save_qoder_auto_checkin_settings(
+    settings: crate::modules::qoder_auto_checkin::QoderAutoCheckinSettings,
+) -> Result<crate::modules::qoder_auto_checkin::QoderAutoCheckinSettings, String> {
+    crate::modules::qoder_auto_checkin::save_settings(settings)
+}
+
+#[tauri::command]
+pub async fn check_qoder_reward_status(
+    account_id: String,
+) -> Result<QoderAccount, String> {
+    let result = qoder_oauth::query_qoder_campaign_status(&account_id).await;
+    result.map(QoderAccount::for_ipc)
+}
+
+#[tauri::command]
+pub async fn batch_check_qoder_reward_statuses(
+    account_ids: Vec<String>,
+) -> Result<Vec<QoderAccount>, String> {
+    let mut results = Vec::new();
+    for id in account_ids {
+        match qoder_oauth::query_qoder_campaign_status(&id).await {
+            Ok(acc) => results.push(acc.for_ipc()),
+            Err(err) => {
+                logger::log_warn(&format!("[Qoder Campaign] 查询活动状态失败: id={}, err={}", id, err));
+                // Only confirmed queries are returned. Existing snapshots remain in storage;
+                // the caller must be able to distinguish failures for delayed retry.
+            }
+        }
+    }
+    Ok(results)
+}
 
 #[cfg(test)]
 mod tests {
@@ -609,7 +690,6 @@ mod tests {
         assert!(error.contains("rollback failure"));
         assert!(error.contains("未自动启动客户端"));
     }
-
 
     #[test]
     fn refresh_never_hot_writes_app_credentials() {
