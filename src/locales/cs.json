@@ -283,6 +283,7 @@
     },
     "confirm": "Potvrdit",
     "cancel": "Zrušit",
+    "stop": "Zastavit",
     "cancelling": "Rušení...",
     "cancelled": "Zrušeno",
     "save": "Uložit",
@@ -6115,7 +6116,10 @@
     },
     "qoder": {
       "title": "Nastavení Qoder",
-      "appPath": "Cesta Qoder"
+      "appPathIde": "Cesta Qoder IDE",
+      "appPathApp": "Cesta Qoder",
+      "appPathCnIde": "Cesta Qoder CN IDE",
+      "appPathCnApp": "Cesta Qoder CN"
     },
     "trae": {
       "title": "Nastavení Trae",
@@ -6800,19 +6804,31 @@
     }
   },
   "qoder": {
+    "quotaSync": {
+      "unknownPlan": "Tarif není dostupný"
+    },
     "title": "Správa účtů Qoder",
-    "comingSoon": {
-      "title": "Funkce více instancí již brzy",
-      "desc": "Spusťte více instancí Qoder.app s různými účty současně, zůstaňte naladěni."
+    "suite": {
+      "sharedAccounts": "App a IDE sdílejí účty v rámci regionu. Stačí jedna autorizace nebo import.",
+      "deleteSharedSingle": "Smazat tento sdílený účet ze seznamů App i IDE v tomto regionu?",
+      "deleteSharedMulti": "Smazat {{count}} sdílených účtů ze seznamů App i IDE v tomto regionu?",
+      "variants": {
+        "qoder": "Qoder IDE",
+        "qoder_app": "Qoder",
+        "qoder_cn_ide": "Qoder CN IDE",
+        "qoder_cn_app": "Qoder CN"
+      }
     },
     "instances": {
       "unsupported": {
         "descPlatform": "Více instancí Qoder je podporováno pouze na macOS, Windows a Linuxu."
-      }
+      },
+      "appMultiInstanceUnsupported": "Klient {{variant}} nepodporuje více instancí: oficiální mechanismus jedné instance znemožňuje spuštění více relací současně. Použijte přepínání účtů."
     },
     "oauth": {
       "hint": "Dokončete přihlášení v otevřené stránce prohlížeče: pokud se přihlašovací stránka neotevřela automaticky, klikněte na „Kopírovat odkaz pro přihlášení“, zkopírujte odkaz a vložte jej do prohlížeče.",
-      "copyLoginUrl": "Kopírovat odkaz pro přihlášení"
+      "copyLoginUrl": "Kopírovat odkaz pro přihlášení",
+      "accountNotVisible": "Autorizovaný účet se neobjevil v seznamu uložených účtů"
     },
     "usageOverview": {
       "title": "Přehled využití",
@@ -6833,9 +6849,11 @@
       "title": "Přidat účet Qoder"
     },
     "import": {
+      "jsonPolicy": "U nových účtů nebo účtů bez přihlašovacích údajů lze údaje obnovit. U účtů s autorizací se sloučí pouze informace a zachová se aktuální autorizace. Pro změnu autorizace se přihlaste znovu.",
       "localDesc": "Načte aktuální stav přihlášení z místního klienta Qoder, včetně informací o uživateli, plánu a využití kreditů.",
       "localFailed": "Lokální import selhal: {{error}}",
-      "localSuccess": "Účet byl importován z lokálního Qoderu."
+      "localSuccess": "Účet byl importován z lokálního Qoderu.",
+      "autoCloseCountdown": "Automaticky se zavře za {{seconds}} s"
     },
     "empty": {
       "desc": "Klikněte na Přidat účet a použijte přihlášení, lokální import nebo import JSON."

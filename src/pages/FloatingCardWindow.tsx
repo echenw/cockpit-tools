@@ -1,3 +1,5 @@
+import { useQoderCurrentAccountIds } from '../hooks/useQoderCurrentAccountIds';
+import { qoderAccountSupportsVariant, isQoderVariantId } from '../types/qoder';
 import { type CSSProperties, type MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, ExternalLink, Pin, PinOff, RefreshCw, Star, Undo2, X, Minimize2, Maximize2, Blend } from 'lucide-react';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
@@ -69,7 +71,10 @@ import { useGitHubCopilotInstanceStore } from '../stores/useGitHubCopilotInstanc
 import type { InstanceStoreState } from '../stores/createInstanceStore';
 import { useInstanceStore } from '../stores/useInstanceStore';
 import { useKiroInstanceStore } from '../stores/useKiroInstanceStore';
-import { useQoderInstanceStore } from '../stores/useQoderInstanceStore';
+import {
+  useQoderCnIdeInstanceStore,
+  useQoderInstanceStore,
+} from '../stores/useQoderInstanceStore';
 import {
   useTraeCnInstanceStore,
   useTraeInstanceStore,
@@ -217,6 +222,12 @@ function resolveInstanceStoreApi(platformId: PlatformId): FloatingCardInstanceSt
       return useCodebuddyCnInstanceStore.getState();
     case 'qoder':
       return useQoderInstanceStore.getState();
+    case 'qoder_cn_ide':
+      return useQoderCnIdeInstanceStore.getState();
+    case 'qoder_app':
+    case 'qoder_cn_app':
+      // App 系客户端禁止多开（官方单实例机制），无实例管理。
+      return null;
     case 'trae':
       return useTraeInstanceStore.getState();
     case 'trae_solo':
@@ -287,7 +298,6 @@ export function FloatingCardWindow() {
   } = useCodebuddyCnAccountStore();
   const {
     accounts: qoderAccounts,
-    currentAccountId: qoderCurrentId,
   } = useQoderAccountStore();
   const {
     accounts: zcodeAccounts,
@@ -310,6 +320,7 @@ export function FloatingCardWindow() {
   const appearance = useFloatingCardAppearance();
   const previousInstanceContextRef = useRef<FloatingCardInstanceContext | null>(null);
   const [displayGroups, setDisplayGroups] = useState<DisplayGroup[]>([]);
+  const qoderCurrentIds = useQoderCurrentAccountIds(qoderAccounts);
   const [selectedPlatform, setSelectedPlatform] = useState<PlatformId>(loadInitialPlatform);
   const [instanceContext, setInstanceContext] = useState<FloatingCardInstanceContext | null>(null);
   const [viewedAccountIds, setViewedAccountIds] = useState<Partial<Record<PlatformId, string | null>>>({});
@@ -516,6 +527,9 @@ export function FloatingCardWindow() {
           await useCodebuddyCnAccountStore.getState().fetchAccounts();
           break;
         case 'qoder':
+        case 'qoder_app':
+        case 'qoder_cn_ide':
+        case 'qoder_cn_app':
           await useQoderAccountStore.getState().fetchAccounts();
           break;
         case 'zcode':
@@ -556,11 +570,13 @@ export function FloatingCardWindow() {
           const payload = event.payload;
           if (
             !payload ||
-            payload.platformId !== selectedPlatform ||
+            (payload.platformId !== selectedPlatform && !(isQoderVariantId(payload.platformId) && isQoderVariantId(selectedPlatform))) ||
             payload.sourceWindowLabel === currentWindowLabel
           ) {
             return;
           }
+          // Qoder 共享账号库由 useQoderCurrentAccountIds 同步，避免重复请求。
+          if (isQoderVariantId(payload.platformId)) return;
           await fetchPlatformData(payload.platformId, {
             allowEmpty: payload.reason === 'delete',
           });
@@ -583,7 +599,9 @@ export function FloatingCardWindow() {
             if (disposed) return;
             setSelectedPlatform(payload.platformId);
           }
-          await fetchPlatformData(payload.platformId);
+          if (!isQoderVariantId(payload.platformId)) {
+            await fetchPlatformData(payload.platformId);
+          }
           if (disposed) return;
           setViewedAccountIds((prev) => ({
             ...prev,
@@ -812,10 +830,15 @@ export function FloatingCardWindow() {
     () => resolveCurrentAccountById(codebuddyCnAccounts, codebuddyCnCurrentId),
     [codebuddyCnAccounts, codebuddyCnCurrentId],
   );
-  const qoderCurrent = useMemo(
-    () => resolveCurrentAccountById(qoderAccounts, qoderCurrentId),
-    [qoderAccounts, qoderCurrentId],
+  const scopedQoderAccounts = useMemo(
+    () => qoderAccounts.filter((account) => qoderAccountSupportsVariant(account, selectedPlatform)),
+    [qoderAccounts, selectedPlatform],
   );
+  const qoderCurrent = useMemo(
+    () => resolveCurrentAccountById(scopedQoderAccounts, isQoderVariantId(selectedPlatform) ? qoderCurrentIds[selectedPlatform] : null),
+    [scopedQoderAccounts, qoderCurrentIds, selectedPlatform],
+  );
+
   const zcodeCurrent = useMemo(
     () => resolveCurrentAccountById(zcodeAccounts, zcodeCurrentId),
     [zcodeAccounts, zcodeCurrentId],
@@ -892,8 +915,11 @@ export function FloatingCardWindow() {
           actualCurrentAccount: codebuddyCnCurrent,
         };
       case 'qoder':
+      case 'qoder_app':
+      case 'qoder_cn_ide':
+      case 'qoder_cn_app':
         return {
-          accounts: qoderAccounts,
+          accounts: scopedQoderAccounts,
           actualCurrentAccount: qoderCurrent,
         };
       case 'trae':
@@ -945,7 +971,7 @@ export function FloatingCardWindow() {
     githubCopilotCurrent,
     kiroAccounts,
     kiroCurrent,
-    qoderAccounts,
+    scopedQoderAccounts,
     qoderCurrent,
     selectedPlatform,
     traeAccounts,
@@ -997,7 +1023,10 @@ export function FloatingCardWindow() {
       case 'codebuddy_cn':
         return getRecommendedCodebuddyCnAccount(codebuddyCnAccounts, effectiveCurrentId);
       case 'qoder':
-        return getRecommendedQoderAccount(qoderAccounts, effectiveCurrentId);
+      case 'qoder_app':
+      case 'qoder_cn_ide':
+      case 'qoder_cn_app':
+        return getRecommendedQoderAccount(scopedQoderAccounts, effectiveCurrentId);
       case 'zcode':
         return getRecommendedZcodeAccount(zcodeAccounts, effectiveCurrentId);
       case 'trae':
@@ -1024,7 +1053,7 @@ export function FloatingCardWindow() {
     grokAccounts,
     githubCopilotAccounts,
     kiroAccounts,
-    qoderAccounts,
+    scopedQoderAccounts,
     selectedPlatform,
     traeAccounts,
     windsurfAccounts,
@@ -1096,6 +1125,9 @@ export function FloatingCardWindow() {
       case 'codebuddy_cn':
         return buildCodebuddyAccountPresentation(viewedAccount as typeof codebuddyCnAccounts[number], t);
       case 'qoder':
+      case 'qoder_app':
+      case 'qoder_cn_ide':
+      case 'qoder_cn_app':
         return buildQoderAccountPresentation(viewedAccount as typeof qoderAccounts[number], t);
       case 'trae':
       case 'trae_solo':
@@ -1203,7 +1235,10 @@ export function FloatingCardWindow() {
             await useCodebuddyCnAccountStore.getState().refreshToken(viewedAccount.id);
             break;
           case 'qoder':
-            await useQoderAccountStore.getState().refreshToken(viewedAccount.id);
+          case 'qoder_app':
+          case 'qoder_cn_ide':
+          case 'qoder_cn_app':
+            await useQoderAccountStore.getState().refreshToken(viewedAccount.id, selectedPlatform);
             break;
           case 'zcode':
             await useZcodeAccountStore.getState().refreshToken(viewedAccount.id);
@@ -1333,7 +1368,10 @@ export function FloatingCardWindow() {
             await useCodebuddyCnAccountStore.getState().switchAccount(viewedAccount.id);
             break;
           case 'qoder':
-            await useQoderAccountStore.getState().switchAccount(viewedAccount.id);
+          case 'qoder_app':
+          case 'qoder_cn_ide':
+          case 'qoder_cn_app':
+            await useQoderAccountStore.getState().switchAccount(viewedAccount.id, selectedPlatform);
             break;
           case 'zcode':
             await useZcodeAccountStore.getState().switchAccount(viewedAccount.id);

@@ -283,6 +283,7 @@
     },
     "confirm": "Confirmar",
     "cancel": "Cancelar",
+    "stop": "Detener",
     "cancelling": "Cancelando...",
     "cancelled": "Cancelado",
     "save": "Guardar",
@@ -6115,7 +6116,10 @@
     },
     "qoder": {
       "title": "Configuración de Qoder",
-      "appPath": "Ruta de Qoder"
+      "appPathIde": "Ruta de Qoder IDE",
+      "appPathApp": "Ruta de Qoder",
+      "appPathCnIde": "Ruta de Qoder CN IDE",
+      "appPathCnApp": "Ruta de Qoder CN"
     },
     "trae": {
       "title": "Configuración de Trae",
@@ -6800,19 +6804,31 @@
     }
   },
   "qoder": {
+    "quotaSync": {
+      "unknownPlan": "Plan no disponible"
+    },
     "title": "Gestión de cuentas de Qoder",
-    "comingSoon": {
-      "title": "Multi-Instancia Próximamente",
-      "desc": "Ejecute múltiples instancias de Qoder.app con diferentes cuentas simultáneamente."
+    "suite": {
+      "sharedAccounts": "App e IDE comparten cuentas dentro de cada región. Autoriza o importa una vez para usar ambos.",
+      "deleteSharedSingle": "¿Eliminar esta cuenta compartida de las listas de App e IDE de esta región?",
+      "deleteSharedMulti": "¿Eliminar {{count}} cuentas compartidas de las listas de App e IDE de esta región?",
+      "variants": {
+        "qoder": "Qoder IDE",
+        "qoder_app": "Qoder",
+        "qoder_cn_ide": "Qoder CN IDE",
+        "qoder_cn_app": "Qoder CN"
+      }
     },
     "instances": {
       "unsupported": {
         "descPlatform": "Las múltiples instancias de Qoder solo son compatibles con macOS, Windows y Linux."
-      }
+      },
+      "appMultiInstanceUnsupported": "El cliente {{variant}} no admite instancias múltiples: el mecanismo oficial de instancia única impide ejecutar varias sesiones a la vez. Utilice la función de cambio de cuenta."
     },
     "oauth": {
       "hint": "Completa el inicio de sesión en la página del navegador abierta: si la página de inicio de sesión no se abrió automáticamente, haz clic en «Copiar enlace de inicio de sesión», copia el enlace y pégalo en el navegador para completar el inicio de sesión.",
-      "copyLoginUrl": "Copiar enlace de inicio de sesión"
+      "copyLoginUrl": "Copiar enlace de inicio de sesión",
+      "accountNotVisible": "La cuenta autorizada no apareció en la lista de cuentas guardadas"
     },
     "usageOverview": {
       "title": "Resumen de uso",
@@ -6833,9 +6849,11 @@
       "title": "Agregar cuenta de Qoder"
     },
     "import": {
+      "jsonPolicy": "Las cuentas nuevas o sin credenciales pueden restaurarlas. En las cuentas ya autorizadas solo se combinan los datos y se conserva la autorización actual. Para actualizarla, inicia sesión de nuevo.",
       "localDesc": "Lee el estado de inicio de sesión actual del cliente local de Qoder, incluida la información del usuario, el plan y el uso de créditos.",
       "localFailed": "Error en importación local: {{error}}",
-      "localSuccess": "Cuenta importada desde Qoder local."
+      "localSuccess": "Cuenta importada desde Qoder local.",
+      "autoCloseCountdown": "Se cerrará automáticamente en {{seconds}} s"
     },
     "empty": {
       "desc": "Haz clic en \"Agregar cuenta\" para usar inicio de sesión, importación local o importación JSON."

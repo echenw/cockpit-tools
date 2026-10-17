@@ -227,17 +227,19 @@ Manage CodeBuddy CN instances with isolated profiles and lifecycle controls.
 
 ### 11. Qoder Account Management
 
-- **Regional Accounts and Credentials**: international and CN accounts remain isolated. IDE and App share each regional identity by official user ID, with separate client AT/job credentials and current-account selections. Legacy merges keep encrypted backups and old IDs as aliases; missing user IDs never merge through an empty email.
-- **Authorization and Import**: OAuth device authorization, local import and JSON import route by region. The account owner stores one shared device RT, with client sessions maintained as projections. Running App auth files are not hot-written. Account-list IPC responses redact credentials. This snapshot has only been reviewed statically; native login and real-account migration remain unverified.
-
-- **Account Import**: supports local import and JSON import
-- **Quota View**: shows Credits usage, remaining credits, and raw plan values
-- **Batch Operations**: supports tags, filters, export, and batch delete/refresh
-- **Switch Injection**: supports injecting and launching Qoder after account switch
+- **Regional Accounts**: all four client entries and icons remain. App and IDE share accounts within the same region; authorizing or importing either makes the account appear in both lists. International and CN accounts stay separate. Each regional account owns one encrypted device RT, with separate client AT/job credentials and current-account selections. Deleting an account removes it from both same-region lists. Legacy records are merged by region and official user ID, with encrypted backups under `qoder-regional-backups/<migration-id>/` and old IDs retained for existing references. Migration and replay have been tested using isolated fictional accounts; real-account migration and native client flows have not been run.
+- **Account Import**: OAuth, Token/JSON import
+- **Quota View**: Inline Suggestions / Chat messages usage and reset time
+- **Device Authorization**: authorization routes are selected by region. IDE and App share the regional account while retaining client-specific login projections. OAuth, local and JSON imports are supported. Full native client login and long-term renewal remain unverified.
+- **Batch Operations**: Tags and bulk actions
+- **Switching and Recovery**: the selected entry determines the target client. Prepare client credentials and preserve the final native App session before injecting another account. After closing a running App, failures restart it only when the original session is preserved or restored. If target auth was committed, retain it; an unconfirmed rollback requires manual recovery. Failures remain errors. This change has only been reviewed statically.
+- **Refresh and Feedback**: regional refresh credentials and client-specific App job credentials are routed to the corresponding client. Running App sessions are queried without background auth-file writes. Account actions show feedback beside their buttons.
 
 #### 10.1 Qoder Multi-Instance
 
-Manage Qoder instances with isolated profiles and lifecycle controls.
+Qoder IDE and Qoder CN IDE support multi-account multi-instance parallel runs (instances are managed per variant). Qoder and Qoder CN (App versions) are limited by the official client's single-instance mechanism and cannot run multiple sessions at the same time; use account switching instead.
+
+Data exports that include configuration save instance settings for both international and CN IDE variants. Imports restore their account bindings and instance settings separately. Older backups without CN IDE settings leave existing CN instances unchanged. This addition has only been checked statically; actual export and restoration have not been exercised.
 
 - **Isolated Profiles**: each instance uses its own user data directory
 - **Quick Lifecycle**: start/stop/force stop instances

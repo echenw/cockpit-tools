@@ -1541,6 +1541,15 @@ fn parse_qoder_macos_process_snapshot(
     expected_launch: &str,
     output: std::io::Result<std::process::Output>,
 ) -> Result<Vec<(u32, Option<String>)>, String> {
+    parse_qoder_macos_process_snapshot_for_scope(kind, Some(expected_launch), output)
+}
+
+#[cfg(target_os = "macos")]
+fn parse_qoder_macos_process_snapshot_for_scope(
+    kind: crate::modules::qoder_variant::QoderVariantKind,
+    expected_launch: Option<&str>,
+    output: std::io::Result<std::process::Output>,
+) -> Result<Vec<(u32, Option<String>)>, String> {
     let output = output.map_err(|err| format!("{} ps 进程枚举失败: {err}", kind.display_name()))?;
     if !output.status.success() {
         return Err(format!(
@@ -1554,8 +1563,8 @@ fn parse_qoder_macos_process_snapshot(
     if stdout.trim().is_empty() {
         return Err(format!("{} ps 进程枚举返回空快照，无法确认客户端已退出", kind.display_name()));
     }
-    let expected = normalize_path_for_compare(expected_launch);
-    let expected_root = normalize_macos_app_root(Path::new(expected_launch))
+    let expected = expected_launch.map(normalize_path_for_compare);
+    let expected_root = expected_launch.and_then(|path| normalize_macos_app_root(Path::new(path)))
         .map(|root| normalize_path_for_compare(&root));
     let mut entries = Vec::new();
     for line in stdout.lines() {
@@ -1566,7 +1575,14 @@ fn parse_qoder_macos_process_snapshot(
         let mut parts = line.splitn(2, |ch: char| ch.is_whitespace());
         let pid_str = parts.next().unwrap_or("").trim();
         let cmdline = parts.next().unwrap_or("").trim();
-        if !is_qoder_variant_main_process_command_line(kind, cmdline) {
+        let matches_scope = if expected.is_some() {
+            is_qoder_variant_main_process_command_line(kind, cmdline)
+        } else {
+            // 删除需要保护仍占用 profile 的 Helper，不能只检查主进程。
+            let bundle = crate::modules::qoder_platform_paths::qoder_platform_table(kind).macos_app_bundle;
+            cmdline.to_ascii_lowercase().contains(&format!("/{}/contents/", bundle.to_ascii_lowercase()))
+        };
+        if !matches_scope {
             continue;
         }
         let pid = pid_str.parse::<u32>().map_err(|err| {
@@ -1578,8 +1594,17 @@ fn parse_qoder_macos_process_snapshot(
         let root = normalize_macos_app_root(Path::new(&exe_path))
             .map(|value| normalize_path_for_compare(&value));
         let same_bundle = expected_root.as_ref().is_some_and(|expected| root.as_ref() == Some(expected));
-        if normalized != expected && !same_bundle {
+        if expected.as_ref().is_some_and(|expected| &normalized != expected && !same_bundle) {
             continue;
+        }
+        if expected.is_none() {
+            // ps 不保留 argv 边界；未加引号且含空格的目录不能按第一个单词
+            // 当作完整路径，否则可能把仍运行的实例误判为已退出。
+            let tokens = split_command_tokens(cmdline);
+            if tokens.windows(2).any(|pair| pair[0].starts_with("--user-data-dir=")
+                && !pair[1].starts_with("--") && !is_env_token(&pair[1])) {
+                return Err(format!("Qoder 进程实例目录参数有歧义，无法确认已退出: pid={pid}"));
+            }
         }
         entries.push((pid, extract_user_data_dir_from_command_line(cmdline)));
     }
@@ -1771,6 +1796,75 @@ pub(crate) fn resolve_qoder_pid_for_variant_checked(
     Ok(resolve_qoder_pid_for_variant_from_entries(
         kind, last_pid, user_data_dir, &entries,
     ))
+}
+
+/// 删除只需确认独立实例目录未被占用，不依赖安装文件仍存在。
+/// 与切号/关闭不同，这里按运行快照匹配实例目录；探测错误仍须阻止删除。
+pub(crate) fn resolve_qoder_instance_pid_for_deletion_checked(
+    kind: crate::modules::qoder_variant::QoderVariantKind,
+    last_pid: Option<u32>,
+    user_data_dir: &str,
+) -> Result<Option<u32>, String> {
+    #[cfg(target_os = "macos")]
+    let entries = parse_qoder_macos_process_snapshot_for_scope(
+        kind, None,
+        Command::new("ps").args(["-axww", "-o", "pid=,command="]).output(),
+    )?;
+    #[cfg(target_os = "linux")]
+    let entries = collect_qoder_process_entries_from_proc_root_for_scope_checked(Path::new("/proc"), None, Some(kind))?;
+    #[cfg(target_os = "windows")]
+    let entries = {
+        let mut system = System::new();
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::All, true,
+            ProcessRefreshKind::nothing().with_cmd(UpdateKind::OnlyIfNotSet),
+        );
+        if system.processes().is_empty() {
+            return Err("Qoder 进程枚举返回空快照，无法确认实例已退出".into());
+        }
+        let mut entries = Vec::new();
+        for (pid, process) in system.processes() {
+            let args: Vec<String> = process.cmd().iter().map(|arg| arg.to_string_lossy().into_owned()).collect();
+            if let Some(entry) = qoder_instance_entry_from_args(
+                kind, pid.as_u32(), &process.name().to_string_lossy(), &args,
+            )? {
+                entries.push(entry);
+            }
+        }
+        entries
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    let entries: Vec<(u32, Option<String>)> = {
+        return Err("当前平台不支持安全检查 Qoder 实例运行状态".into());
+    };
+    Ok(resolve_qoder_pid_for_variant_from_entries(kind, last_pid, Some(user_data_dir), &entries))
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn qoder_instance_entry_from_args(
+    kind: crate::modules::qoder_variant::QoderVariantKind,
+    pid: u32,
+    name: &str,
+    args: &[String],
+) -> Result<Option<(u32, Option<String>)>, String> {
+    if !name.to_ascii_lowercase().contains("qoder")
+        && !args.first().is_some_and(|arg| arg.to_ascii_lowercase().contains("qoder")) {
+        return Ok(None);
+    }
+    if args.first().is_none_or(|arg| arg.trim().is_empty()) {
+        return Err(format!("Qoder 进程参数不可读取，无法确认实例目录: pid={pid}"));
+    }
+    let directory = extract_user_data_dir_from_tokens(args);
+    // 其他已确认变体的缺省目录不能归入本变体；未知签名仍保守保留。
+    // 携带目标目录的 Helper 继续参与占用检查，不依赖安装文件存在。
+    if directory.is_none() {
+        let matches = |candidate| crate::modules::qoder_platform_paths::windows_candidate_matches_variant(candidate, Path::new(&args[0]));
+        if !matches(kind) && crate::modules::qoder_variant::all_qoder_variant_kinds().into_iter()
+            .any(|other| other != kind && matches(other)) {
+            return Ok(None);
+        }
+    }
+    Ok(Some((pid, directory)))
 }
 
 pub fn resolve_qoder_pid_for_variant(
@@ -3155,9 +3249,16 @@ fn collect_qoder_process_entries_from_proc_root_checked(
     proc_root: &Path,
     expected_launch: &str,
 ) -> Result<Vec<(u32, Option<String>)>, String> {
-    let expected_path = std::fs::canonicalize(expected_launch)
-        .unwrap_or_else(|_| PathBuf::from(expected_launch));
-    let expected = normalize_path_for_compare(&expected_path.to_string_lossy());
+    collect_qoder_process_entries_from_proc_root_for_scope_checked(proc_root, Some(expected_launch), None)
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn collect_qoder_process_entries_from_proc_root_for_scope_checked(
+    proc_root: &Path,
+    expected_launch: Option<&str>,
+    default_variant: Option<crate::modules::qoder_variant::QoderVariantKind>,
+) -> Result<Vec<(u32, Option<String>)>, String> {
+    let expected = expected_launch.map(normalize_path_for_compare);
     let proc_entries = std::fs::read_dir(proc_root)
         .map_err(|err| format!("Qoder /proc 进程枚举失败: {err}"))?;
     let mut entries = Vec::new();
@@ -3176,7 +3277,7 @@ fn collect_qoder_process_entries_from_proc_root_checked(
         let exe_hint = executable.as_ref().ok()
             .map(|path| path.to_string_lossy().to_ascii_lowercase())
             .unwrap_or_default();
-        if exe_hint.contains("qoder") && exe_hint.ends_with(" (deleted)") {
+        if expected.is_some() && exe_hint.contains("qoder") && exe_hint.ends_with(" (deleted)") {
             // During upgrades Linux can keep an unlinked binary running.
             // The old executable cannot be reliably compared to the new
             // install path, so never assume the user profile is stopped.
@@ -3187,7 +3288,7 @@ fn collect_qoder_process_entries_from_proc_root_checked(
         // must not block the selected Qoder client.
         if let Ok(path) = &executable {
             let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
-            if normalize_path_for_compare(&resolved.to_string_lossy()) != expected {
+            if expected.as_ref().is_some_and(|expected| &normalize_path_for_compare(&resolved.to_string_lossy()) != expected) {
                 continue;
             }
         }
@@ -3209,13 +3310,32 @@ fn collect_qoder_process_entries_from_proc_root_checked(
         if !likely_qoder && !lower.contains("qoder") {
             continue;
         }
-        if is_helper_command_line(&lower) || lower.contains("crashpad_handler") {
+        if expected.is_some() && (is_helper_command_line(&lower) || lower.contains("crashpad_handler")) {
             continue;
         }
-        executable.map_err(|err| {
+        let executable = executable.map_err(|err| {
             format!("Qoder /proc/{pid}/exe 不可读取，无法确认客户端身份: {err}")
         })?;
-        let dir = extract_user_data_dir_from_command_line(&cmdline_str);
+        let dir = if expected.is_some() {
+            extract_user_data_dir_from_command_line(&cmdline_str)
+        } else {
+            extract_user_data_dir_from_tokens(&linux_proc_cmdline_args(&cmdline))
+        };
+        if dir.is_none() {
+            if let Some(kind) = default_variant {
+                // /proc 可能保留卸载路径，或把启动别名解析为 Electron。
+                // 只排除可确认属于其他变体的缺省进程，未知签名不能当作退出。
+                let executable = executable.to_string_lossy();
+                let executable = Path::new(executable.trim_end_matches(" (deleted)"));
+                let args = linux_proc_cmdline_args(&cmdline);
+                let matches = |candidate| crate::modules::qoder_platform_paths::linux_candidate_matches_variant(candidate, executable)
+                    || args.first().is_some_and(|arg| crate::modules::qoder_platform_paths::linux_candidate_matches_variant(candidate, Path::new(arg)));
+                if !matches(kind) && crate::modules::qoder_variant::all_qoder_variant_kinds().into_iter()
+                    .any(|other| other != kind && matches(other)) {
+                    continue;
+                }
+            }
+        }
         entries.push((pid, dir));
     }
     entries.sort_by_key(|(pid, _)| *pid);

@@ -20,6 +20,9 @@ pub const PLATFORM_GROK: &str = "grok";
 pub const PLATFORM_CODEBUDDY: &str = "codebuddy";
 pub const PLATFORM_CODEBUDDY_CN: &str = "codebuddy_cn";
 pub const PLATFORM_QODER: &str = "qoder";
+pub const PLATFORM_QODER_APP: &str = "qoder_app";
+pub const PLATFORM_QODER_CN_IDE: &str = "qoder_cn_ide";
+pub const PLATFORM_QODER_CN_APP: &str = "qoder_cn_app";
 pub const PLATFORM_ZCODE: &str = "zcode";
 pub const PLATFORM_TRAE: &str = "trae";
 pub const PLATFORM_TRAE_SOLO: &str = "trae_solo";
@@ -27,7 +30,7 @@ pub const PLATFORM_TRAE_CN: &str = "trae_cn";
 pub const PLATFORM_TRAE_SOLO_CN: &str = "trae_solo_cn";
 pub const PLATFORM_WORKBUDDY: &str = "workbuddy";
 
-pub const SUPPORTED_PLATFORM_IDS: [&str; 18] = [
+pub const SUPPORTED_PLATFORM_IDS: [&str; 21] = [
     PLATFORM_CLAUDE_MANAGER,
     PLATFORM_CODEX,
     PLATFORM_ANTIGRAVITY,
@@ -40,6 +43,9 @@ pub const SUPPORTED_PLATFORM_IDS: [&str; 18] = [
     PLATFORM_CODEBUDDY,
     PLATFORM_CODEBUDDY_CN,
     PLATFORM_QODER,
+    PLATFORM_QODER_APP,
+    PLATFORM_QODER_CN_IDE,
+    PLATFORM_QODER_CN_APP,
     PLATFORM_ZCODE,
     PLATFORM_TRAE,
     PLATFORM_TRAE_SOLO,
@@ -129,6 +135,9 @@ fn normalize_platform_id(id: &str) -> Option<&'static str> {
         PLATFORM_CODEBUDDY => Some(PLATFORM_CODEBUDDY),
         PLATFORM_CODEBUDDY_CN => Some(PLATFORM_CODEBUDDY_CN),
         PLATFORM_QODER => Some(PLATFORM_QODER),
+        PLATFORM_QODER_APP | "qoder-app" => Some(PLATFORM_QODER_APP),
+        PLATFORM_QODER_CN_IDE | "qoder-cn-ide" => Some(PLATFORM_QODER_CN_IDE),
+        PLATFORM_QODER_CN_APP | "qoder-cn-app" => Some(PLATFORM_QODER_CN_APP),
         PLATFORM_ZCODE => Some(PLATFORM_ZCODE),
         PLATFORM_TRAE => Some(PLATFORM_TRAE),
         PLATFORM_TRAE_SOLO | "trae-solo" => Some(PLATFORM_TRAE_SOLO),
@@ -190,6 +199,9 @@ fn normalize_tray_platforms(
         PLATFORM_CODEBUDDY,
         PLATFORM_CODEBUDDY_CN,
         PLATFORM_QODER,
+        PLATFORM_QODER_APP,
+        PLATFORM_QODER_CN_IDE,
+        PLATFORM_QODER_CN_APP,
         PLATFORM_ZCODE,
         PLATFORM_TRAE,
         PLATFORM_TRAE_SOLO,
@@ -400,6 +412,9 @@ fn normalize_config(
         PLATFORM_CODEBUDDY,
         PLATFORM_CODEBUDDY_CN,
         PLATFORM_QODER,
+        PLATFORM_QODER_APP,
+        PLATFORM_QODER_CN_IDE,
+        PLATFORM_QODER_CN_APP,
         PLATFORM_TRAE,
         PLATFORM_TRAE_SOLO,
         PLATFORM_TRAE_CN,

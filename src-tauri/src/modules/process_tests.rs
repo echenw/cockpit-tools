@@ -368,6 +368,50 @@ mod qoder_variant_probe_failure_tests {
         assert_eq!(entries[0].0, 45);
         assert_eq!(entries[0].1.as_deref(), Some("/tmp/managed"));
     }
+
+    #[test]
+    fn deletion_snapshot_does_not_require_an_installed_bundle_and_keeps_running_instances() {
+        use super::{parse_qoder_macos_process_snapshot_for_scope, resolve_qoder_pid_for_variant_from_entries};
+        use std::os::unix::process::ExitStatusExt;
+        for kind in [QoderVariantKind::Qoder, QoderVariantKind::QoderCnIde] {
+            let bundle = crate::modules::qoder_platform_paths::qoder_platform_table(kind).macos_app_bundle;
+            let snapshot = |text: String| Ok(std::process::Output {
+                status: std::process::ExitStatus::from_raw(0), stdout: text.into_bytes(), stderr: Vec::new(),
+            });
+            let entries = parse_qoder_macos_process_snapshot_for_scope(kind, None, snapshot(format!(
+                "99 /no-longer-installed/{bundle}/Contents/MacOS/Electron --user-data-dir=/tmp/qoder-orphan-fixture\n"
+            ))).unwrap();
+            assert_eq!(resolve_qoder_pid_for_variant_from_entries(
+                kind, None, Some("/tmp/qoder-orphan-fixture"), &entries,
+            ), Some(99));
+            assert!(parse_qoder_macos_process_snapshot_for_scope(kind, None, snapshot(format!(
+                "99 /no-longer-installed/{bundle}/Contents/MacOS/Electron --user-data-dir=/tmp/orphan profile\n"
+            ))).is_err());
+            let stopped = parse_qoder_macos_process_snapshot_for_scope(kind, None, snapshot("1 /sbin/launchd\n".into())).unwrap();
+            assert!(stopped.is_empty());
+            assert!(parse_qoder_macos_process_snapshot_for_scope(kind, None, Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied, "fixture probe denied",
+            ))).is_err());
+        }
+    }
+
+    #[test]
+    fn helper_only_snapshot_blocks_deletion_but_remains_excluded_from_normal_process_probe() {
+        use super::{parse_qoder_macos_process_snapshot_for_scope, resolve_qoder_pid_for_variant_from_entries};
+        use std::os::unix::process::ExitStatusExt;
+        for kind in [QoderVariantKind::Qoder, QoderVariantKind::QoderCnIde] {
+            let bundle = crate::modules::qoder_platform_paths::qoder_platform_table(kind).macos_app_bundle;
+            let snapshot = || Ok(std::process::Output {
+                status: std::process::ExitStatus::from_raw(0),
+                stdout: format!("501 /uninstalled/{bundle}/Contents/Frameworks/Qoder Helper.app/Contents/MacOS/Qoder Helper --type=renderer --user-data-dir=/tmp/helper-profile\n").into_bytes(),
+                stderr: Vec::new(),
+            });
+            let entries = parse_qoder_macos_process_snapshot_for_scope(kind, None, snapshot()).unwrap();
+            assert_eq!(resolve_qoder_pid_for_variant_from_entries(kind, None, Some("/tmp/helper-profile"), &entries), Some(501));
+            assert_eq!(resolve_qoder_pid_for_variant_from_entries(kind, None, Some("/tmp/other-profile"), &entries), None);
+            assert!(parse_qoder_macos_process_snapshot(kind, &format!("/uninstalled/{bundle}"), snapshot()).unwrap().is_empty());
+        }
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -391,6 +435,67 @@ mod qoder_linux_proc_probe_tests {
         assert!(collect_qoder_process_entries_from_proc_root_checked(
             &base, "/usr/bin/qoder-ide"
         ).is_err());
+    }
+
+    #[test]
+    fn deletion_probe_handles_uninstalled_binary_but_still_detects_its_live_process() {
+        use super::collect_qoder_process_entries_from_proc_root_for_scope_checked;
+        let base = root();
+        fs::create_dir_all(&base).unwrap();
+        assert!(collect_qoder_process_entries_from_proc_root_for_scope_checked(&base, None, None).unwrap().is_empty());
+        let candidate = base.join("333");
+        fs::create_dir(&candidate).unwrap();
+        fs::write(candidate.join("comm"), "qoder-ide\n").unwrap();
+        symlink("/uninstalled/qoder-ide (deleted)", candidate.join("exe")).unwrap();
+        fs::write(candidate.join("cmdline"), b"/uninstalled/qoder-ide\0--user-data-dir=/tmp/orphan profile\0").unwrap();
+        assert_eq!(collect_qoder_process_entries_from_proc_root_for_scope_checked(&base, None, None).unwrap(),
+            vec![(333, Some("/tmp/orphan profile".into()))]);
+        fs::remove_file(candidate.join("cmdline")).unwrap();
+        assert!(collect_qoder_process_entries_from_proc_root_for_scope_checked(&base, None, None).is_err());
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn default_directory_probe_does_not_borrow_another_qoder_variants_process() {
+        use crate::modules::qoder_variant::{all_qoder_variant_kinds, QoderVariantKind};
+        use super::{collect_qoder_process_entries_from_proc_root_for_scope_checked, resolve_qoder_pid_for_variant_from_entries};
+        let base = root();
+        for (index, name) in ["qoder-ide", "qoder", "qoder-cn-ide", "qoder-cn"].iter().enumerate() {
+            let process = base.join((600 + index).to_string());
+            fs::create_dir_all(&process).unwrap();
+            fs::write(process.join("comm"), format!("{name}\n")).unwrap();
+            let executable = if index == 1 { "/uninstalled/electron (deleted)".into() }
+                else { format!("/uninstalled/{name} (deleted)") };
+            symlink(executable, process.join("exe")).unwrap();
+            fs::write(process.join("cmdline"), format!("/uninstalled/{name}\0")).unwrap();
+        }
+        // An explicitly scoped Helper remains visible, including after uninstall.
+        let helper = base.join("700");
+        fs::create_dir(&helper).unwrap();
+        fs::write(helper.join("comm"), "qoder-cn\n").unwrap();
+        symlink("/uninstalled/qoder-cn (deleted)", helper.join("exe")).unwrap();
+        fs::write(helper.join("cmdline"), b"/uninstalled/qoder-cn\0--type=renderer\0--user-data-dir=/tmp/managed-qoder-fixture\0").unwrap();
+        for (index, kind) in all_qoder_variant_kinds().into_iter().enumerate() {
+            let entries = collect_qoder_process_entries_from_proc_root_for_scope_checked(&base, None, Some(kind)).unwrap();
+            assert_eq!(entries, vec![(600 + index as u32, None), (700, Some("/tmp/managed-qoder-fixture".into()))]);
+            let default = super::qoder_variant_default_user_data_dir(kind).unwrap();
+            assert_eq!(resolve_qoder_pid_for_variant_from_entries(kind, None, Some(&default), &entries), Some(600 + index as u32));
+            assert_eq!(resolve_qoder_pid_for_variant_from_entries(kind, None, Some("/tmp/managed-qoder-fixture"), &entries), Some(700));
+        }
+        fs::remove_dir_all(base.join("600")).unwrap();
+        let entries = collect_qoder_process_entries_from_proc_root_for_scope_checked(&base, None, Some(QoderVariantKind::Qoder)).unwrap();
+        let default = super::qoder_variant_default_user_data_dir(QoderVariantKind::Qoder).unwrap();
+        assert_eq!(resolve_qoder_pid_for_variant_from_entries(QoderVariantKind::Qoder, None, Some(&default), &entries), None,
+            "other clients must not block a stopped default IDE");
+        let unknown = base.join("750");
+        fs::create_dir(&unknown).unwrap();
+        fs::write(unknown.join("comm"), "qoder-helper\n").unwrap();
+        symlink("/uninstalled/electron (deleted)", unknown.join("exe")).unwrap();
+        fs::write(unknown.join("cmdline"), b"/uninstalled/electron\0").unwrap();
+        let entries = collect_qoder_process_entries_from_proc_root_for_scope_checked(&base, None, Some(QoderVariantKind::Qoder)).unwrap();
+        assert_eq!(resolve_qoder_pid_for_variant_from_entries(QoderVariantKind::Qoder, None, Some(&default), &entries), Some(750),
+            "an unidentified Qoder process must not be mistaken for confirmed exit");
+        fs::remove_dir_all(base).unwrap();
     }
 
     #[test]
@@ -471,6 +576,42 @@ mod qoder_linux_proc_probe_tests {
 #[cfg(test)]
 mod qoder_windows_probe_fail_closed_tests {
     use super::{merge_qoder_windows_process_probes, WindowsElectronProcessProbe};
+
+    #[test]
+    fn deletion_uses_runtime_arguments_without_installation_files_and_rejects_unreadable_candidates() {
+        use super::qoder_instance_entry_from_args;
+        use crate::modules::qoder_variant::QoderVariantKind;
+        for (kind, name) in [(QoderVariantKind::Qoder, "Qoder IDE.exe"), (QoderVariantKind::QoderCnIde, "Qoder CN IDE.exe")] {
+            let args = vec![format!("C:/uninstalled/{name}"), "--user-data-dir=C:/orphan profile".into()];
+            assert_eq!(qoder_instance_entry_from_args(kind, 81, name, &args).unwrap(),
+                Some((81, Some("C:/orphan profile".into()))));
+            assert!(qoder_instance_entry_from_args(kind, 81, name, &[]).is_err());
+        }
+        assert_eq!(qoder_instance_entry_from_args(QoderVariantKind::Qoder, 90, "unrelated.exe", &[]).unwrap(), None);
+    }
+
+    #[test]
+    fn windows_default_probe_filters_other_variants_but_retains_explicit_helper_directories() {
+        use crate::modules::qoder_variant::all_qoder_variant_kinds;
+        use super::{qoder_instance_entry_from_args, resolve_qoder_pid_for_variant_from_entries};
+        for (index, kind) in all_qoder_variant_kinds().into_iter().enumerate() {
+            let mut entries = Vec::new();
+            for (other_index, name) in ["Qoder IDE.exe", "Qoder.exe", "Qoder CN IDE.exe", "Qoder CN.exe"].into_iter().enumerate() {
+                let args = vec![format!("C:\\uninstalled\\{name}")];
+                if let Some(entry) = qoder_instance_entry_from_args(kind, 800 + other_index as u32, name, &args).unwrap() {
+                    entries.push(entry);
+                }
+            }
+            assert_eq!(entries, vec![(800 + index as u32, None)]);
+            let default = super::qoder_variant_default_user_data_dir(kind).unwrap();
+            assert_eq!(resolve_qoder_pid_for_variant_from_entries(kind, None, Some(&default), &entries), Some(800 + index as u32));
+            let helper = vec!["C:\\uninstalled\\Qoder CN.exe".into(), "--type=renderer".into(), "--user-data-dir=C:/managed profile".into()];
+            assert_eq!(qoder_instance_entry_from_args(kind, 900, "Qoder CN.exe", &helper).unwrap(),
+                Some((900, Some("C:/managed profile".into()))));
+            assert_eq!(qoder_instance_entry_from_args(kind, 901, "Qoder Helper.exe", &["C:/uninstalled/Qoder Helper.exe".into()]).unwrap(),
+                Some((901, None)), "unknown Qoder signatures must remain visible to the default-directory check");
+        }
+    }
 
     fn snapshot(
         entries: Vec<(u32, Option<String>)>,

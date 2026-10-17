@@ -4,6 +4,7 @@ use super::system::lock_general_config_transaction;
 use crate::models::InstanceStore;
 use crate::modules;
 use crate::modules::config::{self, UserConfig};
+use crate::modules::qoder_variant::QoderVariantKind;
 use crate::modules::websocket;
 
 fn get_app_auto_launch_enabled(app: &tauri::AppHandle) -> Result<bool, String> {
@@ -35,7 +36,9 @@ fn load_instance_store_by_platform(platform: &str) -> Result<InstanceStore, Stri
         "grok" => modules::grok_instance::load_instance_store(),
         "codebuddy" => modules::codebuddy_instance::load_instance_store(),
         "codebuddy_cn" => modules::codebuddy_cn_instance::load_instance_store(),
-        "qoder" => modules::qoder_instance::load_instance_store(),
+        "qoder" | "qoder_cn_ide" => modules::qoder_instance::load_instance_store_for_variant(
+            QoderVariantKind::parse(Some(platform))?,
+        ),
         "zcode" => modules::zcode_instance::load_instance_store(),
         "trae" => modules::trae_instance::load_instance_store(),
         "workbuddy" => modules::workbuddy_instance::load_instance_store(),
@@ -54,7 +57,10 @@ fn save_instance_store_by_platform(platform: &str, store: &InstanceStore) -> Res
         "grok" => modules::grok_instance::save_instance_store(store),
         "codebuddy" => modules::codebuddy_instance::save_instance_store(store),
         "codebuddy_cn" => modules::codebuddy_cn_instance::save_instance_store(store),
-        "qoder" => modules::qoder_instance::save_instance_store(store),
+        "qoder" | "qoder_cn_ide" => modules::qoder_instance::save_instance_store_for_variant(
+            QoderVariantKind::parse(Some(platform))?,
+            store,
+        ),
         "zcode" => modules::zcode_instance::save_instance_store(store),
         "trae" => modules::trae_instance::save_instance_store(store),
         "workbuddy" => modules::workbuddy_instance::save_instance_store(store),

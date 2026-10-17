@@ -1307,25 +1307,79 @@ pub fn inject_secret_to_state_db_for_codebuddy_cn(
     )
 }
 
-pub fn inject_secret_to_state_db_for_qoder(
-    db_path: &std::path::Path,
-    db_key: &str,
-    plaintext: &str,
+/// Qoder 登录三项数据一起写入，读回解密校验在提交前完成。
+/// 加密全部完成后才开启写事务；写后解密校验失败也由该事务回滚。
+pub(crate) fn inject_qoder_secrets_atomic(
+    db_path: &Path,
+    values: &[(&str, &str)],
+    cn: bool,
 ) -> Result<(), String> {
-    inject_secret_to_state_db_with_mode(db_path, db_key, plaintext, SafeStorageReadMode::QoderOnly)
+    let mode = if cn { SafeStorageReadMode::QoderCnOnly } else { SafeStorageReadMode::QoderOnly };
+    let data_root = resolve_data_root_from_state_db_path(db_path)?;
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建 Qoder 登录库目录失败: {e}"))?;
+    }
+    let mut conn = Connection::open(db_path).map_err(|e| format!("打开 Qoder 登录库失败: {e}"))?;
+    let has_table: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='ItemTable')",
+        [], |row| row.get(0),
+    ).map_err(|e| format!("读取 Qoder 登录库结构失败: {e}"))?;
+    let mut encrypted_values = Vec::new();
+    for (key, plaintext) in values {
+        let existing: Option<String> = if has_table {
+            match conn.query_row("SELECT value FROM ItemTable WHERE key=?1", [key], |row| row.get(0)) {
+                Ok(value) => Some(value),
+                Err(rusqlite::Error::QueryReturnedNoRows) => None,
+                Err(e) => return Err(format!("读取 Qoder 登录格式失败: {e}")),
+            }
+        } else { None };
+        let prefix = existing.as_deref().and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+            .and_then(|raw| decode_buffer_data(&raw).ok())
+            .and_then(|bytes| detect_prefix(&bytes).map(str::to_string));
+        let encrypted = encrypt_secret_payload_with_mode(
+            plaintext.as_bytes(), prefix.as_deref(), Some(data_root), mode,
+        )?;
+        let buffer = serde_json::to_string(&serde_json::json!({"type":"Buffer", "data":encrypted}))
+            .map_err(|e| format!("序列化 Qoder 加密数据失败: {e}"))?;
+        encrypted_values.push((key.to_string(), buffer));
+    }
+    write_qoder_secret_batch(&mut conn, &encrypted_values, |transaction| {
+        for (key, expected) in values {
+            let stored: String = transaction.query_row(
+                "SELECT value FROM ItemTable WHERE key=?1", [key], |row| row.get(0),
+            ).map_err(|e| format!("Qoder 登录态读回失败: {e}"))?;
+            let actual = decode_secret_storage_value_with_mode(&stored, Some(data_root), mode)?;
+            if actual != *expected {
+                return Err("Qoder 登录态读回不一致，拒绝提交".into());
+            }
+        }
+        Ok(())
+    })
 }
 
-pub fn inject_secret_to_state_db_for_qoder_cn(
-    db_path: &std::path::Path,
-    db_key: &str,
-    plaintext: &str,
+fn write_qoder_secret_batch(
+    conn: &mut Connection,
+    values: &[(String, String)],
+    verify: impl FnOnce(&Connection) -> Result<(), String>,
 ) -> Result<(), String> {
-    inject_secret_to_state_db_with_mode(
-        db_path,
-        db_key,
-        plaintext,
-        SafeStorageReadMode::QoderCnOnly,
-    )
+    let transaction = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| format!("开启 Qoder 登录事务失败: {e}"))?;
+    let written = (|| {
+        transaction.execute("CREATE TABLE IF NOT EXISTS ItemTable (key TEXT PRIMARY KEY, value TEXT)", [])
+            .map_err(|e| format!("初始化 Qoder 登录表失败: {e}"))?;
+        for (key, value) in values {
+            transaction.execute("INSERT OR REPLACE INTO ItemTable (key,value) VALUES (?1,?2)",
+                rusqlite::params![key,value]).map_err(|e| format!("写入 Qoder 登录态失败: {e}"))?;
+        }
+        verify(&transaction)
+    })();
+    if let Err(error) = written {
+        return match transaction.rollback() {
+            Ok(()) => Err(format!("{error}；登录事务已回滚")),
+            Err(rollback) => Err(format!("{error}；登录事务回滚失败，请人工检查：{rollback}")),
+        };
+    }
+    transaction.commit().map_err(|e| format!("提交 Qoder 登录事务失败: {e}"))
 }
 
 /// App 系（`auth.v1.dat`）是 Electron safeStorage 原文（`v10` 前缀裸字节），
@@ -1449,6 +1503,41 @@ fn inject_secret_to_state_db_with_mode(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn qoder_secret_batch_rolls_back_later_write_and_verification_failures() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT);
+            INSERT INTO ItemTable VALUES ('userInfo','old-info'),('userPlan','old-plan'),('creditUsage','old-credit');
+            CREATE TRIGGER reject_plan BEFORE INSERT ON ItemTable WHEN NEW.key='userPlan'
+            BEGIN SELECT RAISE(ABORT,'fixture write failure'); END;").unwrap();
+        let values = vec![("userInfo".into(), "new-info".into()),
+            ("userPlan".into(), "new-plan".into()), ("creditUsage".into(), "new-credit".into())];
+        let read = |conn: &Connection, key: &str| -> String {
+            conn.query_row("SELECT value FROM ItemTable WHERE key=?1", [key], |row| row.get(0)).unwrap()
+        };
+        let error = write_qoder_secret_batch(&mut conn, &values, |_| panic!("second write must fail"))
+            .unwrap_err();
+        assert!(error.contains("事务已回滚"));
+        assert_eq!(read(&conn, "userInfo"), "old-info");
+        assert_eq!(read(&conn, "userPlan"), "old-plan");
+        assert_eq!(read(&conn, "creditUsage"), "old-credit");
+        conn.execute_batch("DROP TRIGGER reject_plan").unwrap();
+        let error = write_qoder_secret_batch(&mut conn, &values, |tx| {
+            assert_eq!(read(tx, "userInfo"), "new-info");
+            assert_eq!(read(tx, "creditUsage"), "new-credit");
+            Err("fixture verification failure".into())
+        }).unwrap_err();
+        assert!(error.contains("verification failure"));
+        assert_eq!(read(&conn, "userInfo"), "old-info");
+        assert_eq!(read(&conn, "userPlan"), "old-plan");
+        assert_eq!(read(&conn, "creditUsage"), "old-credit");
+        write_qoder_secret_batch(&mut conn, &values, |tx| {
+            for (key, value) in &values { assert_eq!(&read(tx, key), value); }
+            Ok(())
+        }).unwrap();
+        for (key, value) in &values { assert_eq!(&read(&conn, key), value); }
+    }
 
     fn sessions_array(value: serde_json::Value) -> Vec<serde_json::Value> {
         value.as_array().cloned().unwrap_or_default()

@@ -3876,7 +3876,7 @@ fn is_linux_antigravity_process_candidate_from_tokens(
     !is_linux_chromium_helper_tokens(tokens)
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", target_os = "windows", test))]
 fn extract_user_data_dir_from_tokens(tokens: &[String]) -> Option<String> {
     let mut index = 0;
     while index < tokens.len() {

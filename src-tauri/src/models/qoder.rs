@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 // IPC 只传展示所需字段；磁盘中的 QoderAccount 仍保留完整认证载荷用于刷新与切号。
 const PUBLIC_RAW_SCALARS: &[&str] = &[
     "plan_tier_name", "tier_name", "tierName", "planTierName", "plan_name",
@@ -77,6 +81,12 @@ pub struct QoderAccount {
     /// 地区账号唯一的 device RT；客户端投影不另存 device RT。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shared_refresh_token: Option<String>,
+    /// 当前来源 IDE 已确认持有该授权；OAuth/后台轮换后须重新交接。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub native_ide_session: bool,
+    /// 本机实例目录 -> 注入时授权摘要；None 表示已撤销、仍待停止的交接。不是另一份 RT。
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub native_ide_instances: std::collections::HashMap<String, Option<String>>,
     /// 其他客户端的 AT / job 凭据投影；当前来源的投影是 auth_user_info_raw。
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub client_auth: std::collections::HashMap<String, Value>,
@@ -162,6 +172,8 @@ impl QoderAccount {
     }
 
     pub fn for_ipc(mut self) -> Self {
+        self.native_ide_session = false;
+        self.native_ide_instances.clear();
         self.shared_refresh_token = None;
         self.client_auth.clear();
         self.plan_type = self.plan_type_for_display().map(str::to_string);
@@ -177,6 +189,8 @@ impl QoderAccount {
     }
 
     pub fn without_credentials(mut self) -> Self {
+        self.native_ide_session = false;
+        self.native_ide_instances.clear();
         self.shared_refresh_token = None;
         self.client_auth.clear();
         self.auth_user_info_raw = None;

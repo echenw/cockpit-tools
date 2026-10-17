@@ -275,10 +275,9 @@ fn peek_workbuddy_identity() -> Option<String> {
 }
 
 fn peek_qoder_identity(kind: qoder_variant::QoderVariantKind) -> Option<String> {
-    let (email, user_id) = qoder_account::peek_local_identity_for_variant(kind.provider_key())
+    qoder_account::peek_local_authorization_revision_for_variant(kind.provider_key())
         .ok()
-        .flatten()?;
-    identity_key(&[email, user_id])
+        .flatten()
 }
 
 fn peek_trae_identity(platform: trae_account::TraePlatformKind) -> Option<String> {
@@ -521,7 +520,7 @@ fn import_qoder(kind: qoder_variant::QoderVariantKind) -> ImportFuture {
         })
         .await
         .map_err(|error| format!("Qoder 本地导入任务失败: {error}"))?
-        .map(|account| account.is_some())
+        .map(|result| matches!(result, Some(qoder_account::NativeSnapshotSave::Saved(_))))
     })
 }
 

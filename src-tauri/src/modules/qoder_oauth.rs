@@ -1283,6 +1283,20 @@ fn extract_variant_job_refresh_token(
         .and_then(value_to_string)
 }
 
+async fn refresh_native_ide_usage_if_owned<F, Fut>(
+    saved: &QoderAccount,
+    target: &QoderAccount,
+    want_job_line: bool,
+    query_usage: F,
+) -> Result<Option<QoderAccount>, String>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<QoderAccount, String>>,
+{
+    if !qoder_account::native_ide_owns_refresh(saved)? { return Ok(None); }
+    Ok(Some(if want_job_line { target.clone() } else { query_usage().await? }))
+}
+
 async fn refresh_variant_token_for_account(
     variant_key: &str,
     account_id: &str,
@@ -1294,6 +1308,12 @@ async fn refresh_variant_token_for_account(
     let saved = qoder_account::load_account(account_id)
         .ok_or_else(|| format!("Qoder 账号不存在: {}", account_id))?;
     let target = qoder_account::account_for_variant(&saved, params.kind)?;
+    if let Some(account) = refresh_native_ide_usage_if_owned(&saved, &target, want_job_line,
+        || refresh_account_usage(&target, &params)).await? {
+        // 原生默认 IDE / 尚未回收的实例拥有 RT。普通刷新只查询额度，
+        // 不能先轮换账号库凭据，再让本地归属保护拒绝官方客户端的分支。
+        return Ok(account);
+    }
     if let Some(session) = qoder_account::app_owned_session(&target)? {
         // job 会话同样由 App 管理；device 分支只查询额度，绝不兑换 refresh token。
         return if want_job_line {
@@ -1440,22 +1460,15 @@ pub async fn refresh_account_token_for_variant(
     want_job_line: bool,
 ) -> Result<QoderAccount, String> {
     let kind = QoderVariantKind::parse(Some(variant_key))?;
-    let session_lock = if kind.is_app() {
-        Some(client_session_lock(kind)?)
-    } else {
-        None
-    };
-    let _session_guard = match session_lock.as_ref() {
-        Some(lock) => Some(lock.lock().await),
-        None => None,
-    };
+    let session_lock = client_session_lock(kind)?;
+    let _session_guard = session_lock.lock().await;
     let lock = account_refresh_lock(account_id)?;
     let _guard = lock.lock().await;
     refresh_variant_token_for_account(variant_key, account_id, want_job_line).await
 }
 
 /// 返回的账号锁须持有至注入/启动结束，避免刷新在切号中途撤掉授权状态。
-/// 所有远端资料准备均在关闭当前 IDE 之前完成。
+/// 默认切号可先准备；实例重启必须先关闭并回收自己的最终 RT，再准备新凭据。
 pub(crate) async fn prepare_account_for_launch(
     kind: QoderVariantKind,
     account_id: &str,
@@ -1463,11 +1476,15 @@ pub(crate) async fn prepare_account_for_launch(
     let guard = account_refresh_lock(account_id)?.lock_owned().await;
     let saved = qoder_account::load_account(account_id)
         .ok_or_else(|| format!("Qoder 账号不存在: {}", account_id))?;
+    if qoder_account::has_unreconciled_ide_instances(&saved)? {
+        return Err("该账号仍有未回收的 IDE 实例会话，请先停止并回收实例再准备或注入凭据".into());
+    }
     let target = qoder_account::account_for_variant(&saved, kind)?;
     let mut raw = target.auth_user_info_raw.clone().ok_or("Qoder 账号缺少认证资料")?;
     let token_current = client_access_token_is_current(&raw);
     let has_projection = qoder_account::has_client_auth(&saved, kind);
     if !has_projection || !token_current {
+        qoder_account::release_stopped_native_ide_for_launch(&saved)?;
         refresh_variant_token_for_account(kind.provider_key(), &target.id, false).await?;
     } else if !kind.is_app() && (kind.is_cn() && ensure_cn_ide_login_info_ready(&raw).is_err()
         || raw.get("status").and_then(Value::as_i64) != Some(AUTH_STATUS_AUTHORIZED)) {
@@ -1483,7 +1500,12 @@ pub(crate) async fn prepare_account_for_launch(
             ensure_refresh_identity_consistent(&target, &status)?;
             merge_user_status_into_user_info(&mut raw, &status, policy.as_ref());
         }
-        qoder_account::update_refresh_snapshot(&saved, kind, raw, None, None)?;
+        if qoder_account::account_variant_kind(&saved)? == kind {
+            qoder_account::update_login_profile_if_current(&saved.id, kind, &token, Some(raw), None, None, None)?
+                .ok_or("Qoder 授权已更新，未保存旧登录资料")?;
+        } else {
+            qoder_account::update_refresh_snapshot(&saved, kind, raw, None, None)?;
+        }
     }
     if kind.is_app() {
         let saved = qoder_account::load_account(&target.id).ok_or("Qoder 账号已被删除")?;
@@ -2336,6 +2358,51 @@ pub(crate) fn has_saved_oauth_grant(account: &QoderAccount) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn native_ide_refresh_queries_usage_without_rotating_or_revoking_ownership_even_after_at_expiry() {
+        let _env = crate::modules::test_support::env_lock().lock().unwrap();
+        let dir = std::env::temp_dir().join(format!("qoder-native-refresh-{}", uuid::Uuid::new_v4()));
+        struct Restore { previous: Option<std::ffi::OsString>, dir: PathBuf }
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                match &self.previous {
+                    Some(previous) => std::env::set_var("COCKPIT_TOOLS_DATA_DIR", previous),
+                    None => std::env::remove_var("COCKPIT_TOOLS_DATA_DIR"),
+                }
+                let _ = std::fs::remove_dir_all(&self.dir);
+            }
+        }
+        let _restore = Restore { previous: std::env::var_os("COCKPIT_TOOLS_DATA_DIR"), dir: dir.clone() };
+        std::env::set_var("COCKPIT_TOOLS_DATA_DIR", &dir);
+        for kind in [QoderVariantKind::Qoder, QoderVariantKind::QoderCnIde] {
+            let mut grant = qoder_account::save_oauth_grant_for_variant(kind.provider_key(), serde_json::json!({
+                "id":format!("native-refresh-{}", kind.provider_key()),
+                "token":"dt-native-refresh-fixture", "refreshToken":"drt-native-refresh-fixture", "expireTime":"0"
+            })).unwrap();
+            grant.native_ide_session = true;
+            let grant = qoder_account::upsert_account_record(grant).unwrap();
+            let usage = serde_json::json!({"remaining":100});
+            let result = refresh_native_ide_usage_if_owned(&grant, &grant, false, || async {
+                qoder_account::update_account_usage(&grant.id, usage.clone(), None)
+            }).await.unwrap().expect("native ownership must select usage-only refresh");
+            assert_eq!(result.shared_refresh_token, grant.shared_refresh_token);
+            assert_eq!(result.auth_user_info_raw, grant.auth_user_info_raw);
+            assert!(result.native_ide_session);
+            assert_eq!(result.auth_credit_usage_raw, Some(usage));
+            let saved = qoder_account::load_account(&grant.id).unwrap();
+            assert_eq!(saved.shared_refresh_token, grant.shared_refresh_token);
+            assert!(saved.native_ide_session);
+            let mut instance_owned = saved.clone();
+            instance_owned.native_ide_session = false;
+            instance_owned.native_ide_instances.insert("fixture-instance".into(), Some("fixture-grant-digest".into()));
+            assert!(refresh_native_ide_usage_if_owned(&instance_owned, &instance_owned, false,
+                || async { Ok(instance_owned.clone()) }).await.unwrap().is_some());
+            assert!(refresh_native_ide_usage_if_owned(&grant, &grant, true,
+                || std::future::ready(Err::<QoderAccount, String>("unexpected native job query".into())))
+                .await.unwrap().is_some());
+        }
+    }
 
     fn validate_cn_app_device_quad(quad: &QoderDeviceTokenPollResult) -> Result<(), String> {
         let token = quad
@@ -3235,6 +3302,8 @@ mod tests {
 
     fn t7_frozen_account_fixture() -> crate::models::qoder::QoderAccount {
         crate::models::qoder::QoderAccount {
+            native_ide_session: false,
+            native_ide_instances: HashMap::new(),
             shared_refresh_token: None,
             client_auth: HashMap::new(),
             legacy_ids: Vec::new(),
