@@ -72,17 +72,6 @@ impl Default for QoderAccountIndex {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct QoderOAuthStartResponse {
-    pub login_id: String,
-    pub verification_uri: String,
-    pub expires_in: u64,
-    pub interval_seconds: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub callback_url: Option<String>,
-}
-
 impl QoderAccount {
     pub fn summary(&self) -> QoderAccountSummary {
         QoderAccountSummary {

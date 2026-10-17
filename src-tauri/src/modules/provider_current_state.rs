@@ -37,6 +37,9 @@ fn normalize_platform(platform: &str) -> Result<&'static str, String> {
         "codebuddy" => Ok("codebuddy"),
         "codebuddy_cn" | "codebuddy-cn" => Ok("codebuddy_cn"),
         "qoder" => Ok("qoder"),
+        "qoder_app" | "qoder-app" => Ok("qoder_app"),
+        "qoder_cn_ide" | "qoder-cn-ide" => Ok("qoder_cn_ide"),
+        "qoder_cn_app" | "qoder-cn-app" => Ok("qoder_cn_app"),
         "zcode" => Ok("zcode"),
         "trae" => Ok("trae"),
         "trae_solo" | "trae-solo" => Ok("trae_solo"),
@@ -81,11 +84,13 @@ fn save_state(state: &ProviderCurrentState) -> Result<(), String> {
 pub fn get_current_account_id(platform: &str) -> Result<Option<String>, String> {
     let key = normalize_platform(platform)?;
     let state = load_state()?;
-    Ok(state
-        .current_accounts
-        .get(key)
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty()))
+    let id = state.current_accounts.get(key).map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if matches!(key, "qoder" | "qoder_app" | "qoder_cn_ide" | "qoder_cn_app") {
+        return Ok(id.map(|id| crate::modules::qoder_account::load_account(&id)
+            .map(|account| account.id).unwrap_or(id)));
+    }
+    Ok(id)
 }
 
 pub fn resolve_existing_current_account_id<'a, I>(platform: &str, existing_ids: I) -> Option<String>

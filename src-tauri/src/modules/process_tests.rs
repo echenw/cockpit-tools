@@ -293,7 +293,8 @@ function Test-Path([string]$LiteralPath) {{
             "antigravity",
             &["cockpit-regression-ide.exe"],
             &[],
-            output
+            output,
+            &|_| true,
         )
         .is_none());
 
@@ -325,9 +326,247 @@ $shortcut.Save()
             &["cockpit-regression-ide.exe"],
             &[],
             output,
+            &|_| true,
         );
         let _ = std::fs::remove_dir_all(&root);
         assert_eq!(detected.as_deref(), Some(local_exe.as_path()));
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod qoder_variant_probe_failure_tests {
+    use super::parse_qoder_macos_process_snapshot;
+    use crate::modules::qoder_variant::QoderVariantKind;
+
+    #[test]
+    fn failing_or_empty_ps_snapshot_is_not_client_exit() {
+        let kind = QoderVariantKind::Qoder;
+        let expected = "/Applications/Qoder IDE.app";
+        let failure = std::process::Command::new("/usr/bin/false").output();
+        assert!(parse_qoder_macos_process_snapshot(kind, expected, failure).is_err());
+        let permission_denied = Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied, "injected ps denial",
+        ));
+        assert!(parse_qoder_macos_process_snapshot(kind, expected, permission_denied).is_err());
+        let mut empty = std::process::Command::new("/usr/bin/true").output().unwrap();
+        empty.stdout.clear();
+        assert!(parse_qoder_macos_process_snapshot(kind, expected, Ok(empty)).is_err());
+    }
+
+    #[test]
+    fn mac_snapshot_matches_only_the_expected_bundle_and_main_process() {
+        let kind = QoderVariantKind::Qoder;
+        let expected = "/Applications/Qoder IDE.app";
+        let mut output = std::process::Command::new("/usr/bin/true").output().unwrap();
+        output.stdout = concat!(
+            "45 /Applications/Qoder IDE.app/Contents/MacOS/Qoder --user-data-dir=/tmp/managed\n",
+            "46 /tmp/Qoder IDE.app/Contents/MacOS/Qoder --user-data-dir=/tmp/other\n",
+            "47 /Applications/Qoder IDE.app/Contents/Frameworks/Qoder Helper.app/Contents/MacOS/Qoder Helper --type=renderer\n"
+        ).as_bytes().to_vec();
+        let entries = parse_qoder_macos_process_snapshot(kind, expected, Ok(output)).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, 45);
+        assert_eq!(entries[0].1.as_deref(), Some("/tmp/managed"));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod qoder_linux_proc_probe_tests {
+    use super::collect_qoder_process_entries_from_proc_root_checked;
+    use std::{fs, os::unix::fs::symlink, path::PathBuf};
+
+    fn root() -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        std::env::temp_dir().join(format!(
+            "qoder-proc-probe-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    #[test]
+    fn inaccessible_proc_root_aborts_instead_of_reporting_no_client() {
+        let base = root();
+        assert!(collect_qoder_process_entries_from_proc_root_checked(
+            &base, "/usr/bin/qoder-ide"
+        ).is_err());
+    }
+
+    #[test]
+    fn unreadable_matching_cmdline_and_exe_abort_but_unrelated_processes_do_not() {
+        let base = root();
+        let candidate = base.join("101");
+        let other = base.join("202");
+        fs::create_dir_all(&candidate).unwrap();
+        fs::create_dir_all(&other).unwrap();
+        fs::write(candidate.join("comm"), b"qoder-ide\n").unwrap();
+        fs::write(other.join("comm"), b"unrelated\n").unwrap();
+        // The candidate's command line cannot be read. The unrelated
+        // process also has no readable cmdline and must not block the probe.
+        assert!(collect_qoder_process_entries_from_proc_root_checked(
+            &base, "/usr/bin/qoder-ide"
+        ).unwrap_err().contains("101"));
+        fs::write(candidate.join("cmdline"), b"/usr/bin/qoder-ide\0--user-data-dir=/tmp/managed\0").unwrap();
+        assert!(collect_qoder_process_entries_from_proc_root_checked(
+            &base, "/usr/bin/qoder-ide"
+        ).unwrap_err().contains("exe"));
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn deleted_qoder_binary_is_not_mistaken_for_a_stopped_client() {
+        let base = root();
+        let pid_dir = base.join("505");
+        fs::create_dir_all(&pid_dir).unwrap();
+        fs::write(pid_dir.join("comm"), b"qoder-ide\n").unwrap();
+        symlink("/opt/qoder-ide (deleted)", pid_dir.join("exe")).unwrap();
+        let error = collect_qoder_process_entries_from_proc_root_checked(
+            &base, "/usr/bin/qoder-ide"
+        ).unwrap_err();
+        assert!(error.contains("505"), "{error}");
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn readable_matching_process_is_scoped_to_the_correct_executable_and_profile() {
+        let base = root();
+        let pid_dir = base.join("303");
+        fs::create_dir_all(&pid_dir).unwrap();
+        let executable = base.join("qoder-ide");
+        fs::write(&executable, b"fixture").unwrap();
+        fs::write(pid_dir.join("comm"), b"qoder-ide\n").unwrap();
+        let cmdline = format!("{}\0--user-data-dir=/tmp/qoder-managed\0", executable.display());
+        fs::write(pid_dir.join("cmdline"), cmdline.as_bytes()).unwrap();
+        symlink(&executable, pid_dir.join("exe")).unwrap();
+
+        // Another Qoder variant with an unreadable cmdline is unrelated when
+        // its kernel-reported executable differs from the selected client.
+        let other_dir = base.join("404");
+        fs::create_dir_all(&other_dir).unwrap();
+        let other_exe = base.join("qoder-cn");
+        fs::write(&other_exe, b"fixture").unwrap();
+        fs::write(other_dir.join("comm"), b"qoder-cn\n").unwrap();
+        symlink(&other_exe, other_dir.join("exe")).unwrap();
+
+        let matches = collect_qoder_process_entries_from_proc_root_checked(&base, &executable.to_string_lossy()).unwrap();
+        assert_eq!(matches, vec![(303, Some("/tmp/qoder-managed".to_string()))]);
+
+        // A configured symlink must match its real executable (as /proc does).
+        let launch_alias = base.join("qoder-ide-launcher");
+        symlink(&executable, &launch_alias).unwrap();
+        assert_eq!(
+            collect_qoder_process_entries_from_proc_root_checked(&base, &launch_alias.to_string_lossy()).unwrap(),
+            matches,
+        );
+
+        // A different known executable must not be accepted as this install.
+        assert!(collect_qoder_process_entries_from_proc_root_checked(
+            &base, "/usr/bin/another-qoder"
+        ).unwrap().is_empty());
+        fs::remove_dir_all(&base).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod qoder_windows_probe_fail_closed_tests {
+    use super::{merge_qoder_windows_process_probes, WindowsElectronProcessProbe};
+
+    fn snapshot(
+        entries: Vec<(u32, Option<String>)>,
+        unresolved: Vec<u32>,
+    ) -> WindowsElectronProcessProbe {
+        WindowsElectronProcessProbe {
+            entries,
+            unresolved_pids: unresolved,
+            needs_powershell: false,
+        }
+    }
+
+    #[test]
+    fn unreadable_profile_cannot_be_mistaken_for_default() {
+        let native = snapshot(Vec::new(), vec![42]);
+        let fallback = snapshot(Vec::new(), vec![42]);
+        let err = merge_qoder_windows_process_probes(native, fallback).unwrap_err();
+        assert!(err.contains("42"), "{err}");
+    }
+
+    #[test]
+    fn complete_fallback_recovers_an_unknown_managed_profile() {
+        let native = snapshot(Vec::new(), vec![42]);
+        let fallback = snapshot(vec![(42, Some("d:/qoder/managed".into()))], Vec::new());
+        let merged = merge_qoder_windows_process_probes(native, fallback).unwrap();
+        assert_eq!(merged, vec![(42, Some("d:/qoder/managed".into()))]);
+    }
+
+    #[test]
+    fn confirmed_default_process_stays_matchable_without_user_data_dir() {
+        let native = snapshot(vec![(11, None)], Vec::new());
+        let fallback = snapshot(Vec::new(), Vec::new());
+        let merged = merge_qoder_windows_process_probes(native, fallback).unwrap();
+        assert_eq!(merged, vec![(11, None)]);
+    }
+
+    #[test]
+    fn unresolved_executable_path_must_not_disappear_from_a_successful_empty_probe() {
+        let native = snapshot(Vec::new(), vec![73]);
+        let fallback = snapshot(Vec::new(), Vec::new());
+        assert!(merge_qoder_windows_process_probes(native, fallback).is_err());
+    }
+
+    #[test]
+    fn verified_native_process_can_cover_a_powershell_profile_read_failure() {
+        let native = snapshot(vec![(31, Some("c:/qoder/default".into()))], Vec::new());
+        let fallback = snapshot(Vec::new(), vec![31]);
+        assert_eq!(
+            merge_qoder_windows_process_probes(native, fallback).unwrap(),
+            vec![(31, Some("c:/qoder/default".into()))]
+        );
+    }
+}
+
+#[cfg(test)]
+mod qoder_close_probe_fail_closed_tests {
+    use super::close_managed_instances_common;
+
+    #[test]
+    fn failed_initial_process_probe_must_abort_before_shutdown() {
+        let target = vec!["/tmp/qoder-fail-closed-profile".to_string()];
+        let result = close_managed_instances_common(
+            "Qoder Probe Test",
+            "closing",
+            "empty",
+            "not running",
+            "Qoder",
+            "close failed",
+            &target,
+            1,
+            || Err("process enumeration unavailable".to_string()),
+            |_, _| panic!("must not select PIDs after probe failure"),
+            |_| panic!("must not retry after initial probe failure"),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(result.unwrap_err(), "process enumeration unavailable");
+    }
+}
+
+#[cfg(test)]
+mod qoder_app_strict_profile_tests {
+    use super::{build_user_data_dir_match_target, resolve_pid_from_entries_by_user_data_dir};
+
+    #[test]
+    fn explicit_default_profile_detects_app_when_default_fallback_is_disabled() {
+        let default_dir = "/tmp/qoder-app-default";
+        // 严格检测禁用隐式默认目录，因此旧的 None 调用无法找到正在运行的 App。
+        assert!(build_user_data_dir_match_target(None, Some(default_dir.to_string()), false).is_none());
+        let (target, allow_no_dir) = build_user_data_dir_match_target(
+            Some(default_dir), Some(default_dir.to_string()), false,
+        ).unwrap();
+        assert_eq!(resolve_pid_from_entries_by_user_data_dir(
+            None, &target, allow_no_dir, &[(123, None)],
+        ), Some(123));
     }
 }
 
@@ -465,22 +704,209 @@ mod managed_sidecar_port_cleanup_tests {
 
 #[cfg(all(test, target_os = "macos"))]
 mod qoder_macos_process_tests {
-    use super::is_qoder_macos_main_process_command_line;
+    use super::{
+        is_qoder_variant_main_process_command_line, parse_qoder_macos_process_snapshot,
+        resolve_qoder_pid_for_variant_from_entries,
+    };
+    use crate::modules::qoder_variant::QoderVariantKind;
+    use std::os::unix::process::ExitStatusExt;
 
     #[test]
-    fn matches_current_and_legacy_qoder_main_processes() {
-        assert!(is_qoder_macos_main_process_command_line(
+    fn matches_current_qoder_ide_main_process() {
+        assert!(is_qoder_variant_main_process_command_line(
+            QoderVariantKind::Qoder,
             "/Applications/Qoder IDE.app/Contents/MacOS/Qoder"
         ));
-        assert!(is_qoder_macos_main_process_command_line(
+        assert!(!is_qoder_variant_main_process_command_line(
+            QoderVariantKind::Qoder,
             "/Applications/Qoder.app/Contents/MacOS/Qoder"
         ));
-        assert!(!is_qoder_macos_main_process_command_line(
+        assert!(!is_qoder_variant_main_process_command_line(
+            QoderVariantKind::Qoder,
             "/Applications/Qoder IDE.app/Contents/Frameworks/Qoder Helper.app/Contents/MacOS/Qoder Helper --type=gpu-process --user-data-dir=/tmp/qoder"
         ));
-        assert!(!is_qoder_macos_main_process_command_line(
+        assert!(!is_qoder_variant_main_process_command_line(
+            QoderVariantKind::Qoder,
             "/Applications/Qoder IDE.app/Contents/Frameworks/Electron Framework.framework/Helpers/chrome_crashpad_handler"
         ));
+    }
+
+    #[test]
+    fn electron_main_process_resolves_only_the_target_ide_instance() {
+        let kind = QoderVariantKind::Qoder;
+        let snapshot = std::process::Output {
+            status: std::process::ExitStatus::from_raw(0),
+            stdout: concat!(
+                "PID COMMAND\n",
+                "41 /Applications/Qoder IDE.app/Contents/MacOS/Electron --user-data-dir=/tmp/qoder-instance\n",
+                "42 /Applications/Qoder.app/Contents/MacOS/Electron --user-data-dir=/tmp/qoder-instance\n",
+                "43 /Applications/Qoder IDE.app/Contents/Frameworks/Qoder Helper.app/Contents/MacOS/Qoder Helper --type=gpu-process --user-data-dir=/tmp/qoder-instance\n",
+                "44 /Applications/Qoder IDE.app/Contents/MacOS/Electron --user-data-dir=/tmp/qoder-other\n",
+            )
+            .as_bytes()
+            .to_vec(),
+            stderr: Vec::new(),
+        };
+        let entries = parse_qoder_macos_process_snapshot(
+            kind,
+            "/Applications/Qoder IDE.app",
+            Ok(snapshot),
+        )
+        .expect("parse IDE Electron main processes");
+
+        assert_eq!(entries.len(), 2, "App and helper processes must be excluded");
+        assert_eq!(
+            resolve_qoder_pid_for_variant_from_entries(
+                kind,
+                None,
+                Some("/tmp/qoder-instance"),
+                &entries,
+            ),
+            Some(41),
+            "the instance PID must belong to its own IDE user-data directory"
+        );
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod qoder_variant_launch_mapping_tests {
+    use super::{is_qoder_variant_main_process_command_line, qoder_variant_client_bundle};
+    use crate::modules::qoder_variant::QoderVariantKind;
+
+    #[test]
+    fn qoder_variant_client_bundle_mapping() {
+        let cases = [
+            (QoderVariantKind::QoderCnApp, "Qoder CN.app"),
+            (QoderVariantKind::QoderApp, "Qoder.app"),
+            (QoderVariantKind::QoderCnIde, "Qoder CN IDE.app"),
+            (QoderVariantKind::Qoder, "Qoder IDE.app"),
+        ];
+        for (kind, bundle) in cases {
+            assert_eq!(qoder_variant_client_bundle(kind), bundle, "{kind:?}");
+            println!("qoder variant {:?} -> {}", kind, bundle);
+        }
+    }
+
+    #[test]
+    fn qoder_variant_main_process_matching_is_per_variant() {
+        assert!(is_qoder_variant_main_process_command_line(
+            QoderVariantKind::QoderCnApp,
+            "/Applications/Qoder CN.app/Contents/MacOS/Qoder CN"
+        ));
+        assert!(is_qoder_variant_main_process_command_line(
+            QoderVariantKind::QoderCnIde,
+            "/Applications/Qoder CN IDE.app/Contents/MacOS/Qoder CN"
+        ));
+        assert!(is_qoder_variant_main_process_command_line(
+            QoderVariantKind::QoderApp,
+            "/Applications/Qoder.app/Contents/MacOS/Qoder"
+        ));
+        // 变体互不串台：CN App 匹配不到 intl App，反之亦然。
+        assert!(!is_qoder_variant_main_process_command_line(
+            QoderVariantKind::QoderCnApp,
+            "/Applications/Qoder.app/Contents/MacOS/Qoder"
+        ));
+        assert!(!is_qoder_variant_main_process_command_line(
+            QoderVariantKind::QoderApp,
+            "/Applications/Qoder CN.app/Contents/MacOS/Qoder CN"
+        ));
+        // helper/crashpad 不算主进程。
+        assert!(!is_qoder_variant_main_process_command_line(
+            QoderVariantKind::QoderCnApp,
+            "/Applications/Qoder CN.app/Contents/Frameworks/Qoder CN Helper.app/Contents/MacOS/Qoder CN Helper --type=gpu-process"
+        ));
+        assert!(!is_qoder_variant_main_process_command_line(
+            QoderVariantKind::QoderCnApp,
+            "/Applications/Qoder CN.app/Contents/Frameworks/Electron Framework.framework/Helpers/chrome_crashpad_handler --database=/tmp"
+        ));
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod qoder_macos_launch_detection_tests {
+    use super::{
+        detect_qoder_exec_path, resolve_qoder_variant_custom_exec_path,
+        resolve_qoder_variant_launch_path,
+    };
+    use crate::modules::qoder_platform_paths::macos_exec_candidates;
+    use crate::modules::qoder_variant::QoderVariantKind;
+
+    #[test]
+    fn requires_current_ide_bundle_name_and_identity() {
+        let root = std::env::temp_dir()
+            .join(format!("qoder-bundle-{}", uuid::Uuid::new_v4()));
+        for (bundle_name, bundle_id, accepted) in [
+            ("Qoder.app", "com.qoder.app", false),
+            ("Qoder.app", "com.qoder.ide", false),
+            ("Qoder IDE.app", "com.qoder.app", false),
+            ("Qoder IDE.app", "com.qoder.ide", true),
+        ] {
+            let bundle = root.join(bundle_name);
+            let macos = bundle.join("Contents/MacOS");
+            std::fs::create_dir_all(&macos).expect("fixture directory");
+            std::fs::write(macos.join("Qoder"), b"").expect("fixture executable");
+            let plist = format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>{}</string></dict></plist>"#,
+                bundle_id
+            );
+            std::fs::write(bundle.join("Contents/Info.plist"), plist).expect("fixture plist");
+            assert_eq!(
+                resolve_qoder_variant_custom_exec_path(QoderVariantKind::Qoder, &bundle.to_string_lossy()),
+                accepted.then(|| macos.join("Qoder")),
+                "bundle name and identity must distinguish {bundle_name} with {bundle_id}"
+            );
+        }
+        std::fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    fn position_of(needle: &str) -> usize {
+        macos_exec_candidates(QoderVariantKind::Qoder)
+            .iter()
+            .position(|path| path.to_string_lossy().contains(needle))
+            .unwrap_or_else(|| panic!("missing candidate {needle}"))
+    }
+
+    #[test]
+    fn ide_bundle_candidates_exclude_app_bundle() {
+        let _ide = position_of("Qoder IDE.app");
+        assert!(macos_exec_candidates(QoderVariantKind::Qoder)
+            .iter()
+            .all(|path| !path.to_string_lossy().contains("/Qoder.app")));
+        for required in [
+            "/Applications/Qoder IDE.app/Contents/MacOS/Qoder",
+            "/Applications/Qoder IDE.app/Contents/MacOS/Qoder IDE",
+            "/Applications/Qoder IDE.app/Contents/MacOS/Electron",
+            "/Applications/Qoder IDE.app",
+        ] {
+            assert!(
+                macos_exec_candidates(QoderVariantKind::Qoder)
+                    .iter()
+                    .any(|path| path.to_string_lossy() == required),
+                "missing IDE candidate {required}"
+            );
+        }
+    }
+
+    #[test]
+    fn detection_prefers_ide_bundle_when_both_bundles_installed() {
+        let ide_bundle = std::path::Path::new("/Applications/Qoder IDE.app");
+        if !ide_bundle.exists() {
+            return;
+        }
+        let detected = detect_qoder_exec_path().expect("detect qoder exec path");
+        assert!(
+            detected.to_string_lossy().contains("Qoder IDE.app"),
+            "detected legacy app instead of IDE: {}",
+            detected.display()
+        );
+        let resolved = resolve_qoder_variant_launch_path(QoderVariantKind::Qoder)
+            .expect("resolve qoder launch path");
+        assert!(
+            resolved.to_string_lossy().contains("Qoder IDE.app"),
+            "resolved legacy app instead of IDE: {}",
+            resolved.display()
+        );
+        println!("qoder launch path = {}", resolved.display());
     }
 }
 

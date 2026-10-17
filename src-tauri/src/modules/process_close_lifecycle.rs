@@ -32,23 +32,23 @@ pub fn close_antigravity_instances(
         user_data_dirs,
         timeout_secs,
         move || {
-            collect_antigravity_process_entries_for_managed_dirs(
+            Ok(collect_antigravity_process_entries_for_managed_dirs(
                 &collect_dirs,
                 collect_default_dir.as_deref(),
-            )
+            ))
         },
         |entries, target_dirs| {
             select_main_pids_by_target_dirs(entries, target_dirs, default_dir.as_deref())
         },
         |target_dirs| {
-            filter_entries_by_target_dirs(
+            Ok(filter_entries_by_target_dirs(
                 collect_antigravity_process_entries_for_managed_dirs(
                     &remaining_dirs,
                     remaining_default_dir.as_deref(),
                 ),
                 target_dirs,
                 default_dir.as_deref(),
-            )
+            ))
         },
         Some(request_antigravity_graceful_close as fn(u32)),
         Some(2),
@@ -84,16 +84,16 @@ pub fn close_antigravity_legacy_instances(
         "无法关闭受管 Antigravity 实例进程，请手动关闭后重试",
         user_data_dirs,
         timeout_secs,
-        collect_antigravity_legacy_process_entries,
+        || Ok(collect_antigravity_legacy_process_entries()),
         |entries, target_dirs| {
             select_main_pids_by_target_dirs(entries, target_dirs, default_dir.as_deref())
         },
         |target_dirs| {
-            filter_entries_by_target_dirs(
+            Ok(filter_entries_by_target_dirs(
                 collect_antigravity_legacy_process_entries(),
                 target_dirs,
                 default_dir.as_deref(),
-            )
+            ))
         },
         Some(request_antigravity_graceful_close as fn(u32)),
         Some(2),
@@ -130,12 +130,12 @@ fn close_user_data_dir_scoped_instances(
         failure_message,
         user_data_dirs,
         timeout_secs,
-        collect_entries,
+        || Ok(collect_entries()),
         |entries, target_dirs| {
             select_main_pids_by_target_dirs(entries, target_dirs, default_dir.as_deref())
         },
         |target_dirs| {
-            filter_entries_by_target_dirs(collect_entries(), target_dirs, default_dir.as_deref())
+            Ok(filter_entries_by_target_dirs(collect_entries(), target_dirs, default_dir.as_deref()))
         },
         None,
         None,
@@ -179,19 +179,46 @@ pub fn close_codebuddy_cn_instances(
     )
 }
 
-pub fn close_qoder_instances(user_data_dirs: &[String], timeout_secs: u64) -> Result<(), String> {
-    let default_dir = get_default_qoder_user_data_dir_for_os()
+/// 变体客户端关闭：按安装路径和 userData 目标筛选主进程。
+pub fn close_qoder_variant_instances(
+    kind: crate::modules::qoder_variant::QoderVariantKind,
+    user_data_dirs: &[String],
+    timeout_secs: u64,
+) -> Result<(), String> {
+    let default_dir = qoder_variant_default_user_data_dir(kind)
         .map(|value| normalize_path_for_compare(&value))
         .filter(|value| !value.is_empty());
-    close_user_data_dir_scoped_instances(
-        "Qoder Close",
-        "Qoder",
-        "Unable to close managed Qoder instances; please close them manually and retry",
+    let display = kind.display_name();
+    let log_prefix = format!("{} Close", display);
+    close_managed_instances_common(
+        &log_prefix,
+        &format!("Closing {} instances...", display),
+        &format!("No {} instance directories provided", display),
+        &format!("Managed {} instances are not running", display),
+        display,
+        &format!(
+            "Unable to close managed {} instances; please close them manually and retry",
+            display
+        ),
         user_data_dirs,
         timeout_secs,
-        default_dir,
-        collect_qoder_process_entries,
-    )
+        || collect_qoder_process_entries_for_variant_checked(kind),
+        |entries, target_dirs| {
+            select_main_pids_by_target_dirs(entries, target_dirs, default_dir.as_deref())
+        },
+        |target_dirs| {
+            Ok(filter_entries_by_target_dirs(
+                collect_qoder_process_entries_for_variant_checked(kind)?,
+                target_dirs,
+                default_dir.as_deref(),
+            ))
+        },
+        None,
+        None,
+        None,
+    )?;
+    thread::sleep(Duration::from_millis(350));
+    Ok(())
 }
 
 pub fn close_trae_instances(user_data_dirs: &[String], timeout_secs: u64) -> Result<(), String> {
@@ -452,16 +479,16 @@ pub fn close_trae_platform_instances(
         ),
         user_data_dirs,
         timeout_secs,
-        || collect_trae_process_entries_for_platform(platform),
+        || Ok(collect_trae_process_entries_for_platform(platform)),
         |entries, target_dirs| {
             select_main_pids_by_target_dirs(entries, target_dirs, default_dir.as_deref())
         },
         |target_dirs| {
-            filter_entries_by_target_dirs(
+            Ok(filter_entries_by_target_dirs(
                 collect_trae_process_entries_for_platform(platform),
                 target_dirs,
                 default_dir.as_deref(),
-            )
+            ))
         },
         None,
         None,
