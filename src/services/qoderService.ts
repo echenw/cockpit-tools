@@ -147,3 +147,58 @@ export async function updateQoderAccountTags(
 ): Promise<QoderAccount> {
   return await invoke('update_qoder_account_tags', { accountId, tags });
 }
+
+export interface QoderClaimRewardResult {
+  accountId: string;
+  success: boolean;
+  replayed: boolean;
+  amount?: number;
+  message: string;
+  account?: QoderAccount;
+}
+
+export async function claimQoderReward(accountId: string): Promise<QoderClaimRewardResult> {
+  return await invoke('claim_qoder_reward', { accountId });
+}
+
+export function startQoderRewardBatch(): Promise<string> {
+  return invoke('start_qoder_reward_batch');
+}
+
+export function cancelQoderRewardBatch(batchId: string): Promise<void> {
+  return invoke('cancel_qoder_reward_batch', { batchId });
+}
+
+export function claimQoderBatchReward(accountId: string, batchId: string): Promise<QoderClaimRewardResult | null> {
+  return invoke('claim_qoder_batch_reward', { accountId, batchId });
+}
+
+export interface QoderAutoCheckinSettings {
+  enabled: boolean;
+  time: string;
+  requestIntervalSeconds: number;
+  accountIds: string[];
+}
+
+export async function getQoderAutoCheckinSettings(): Promise<QoderAutoCheckinSettings> {
+  return await invoke('get_qoder_auto_checkin_settings');
+}
+
+export async function recoverQoderAutoCheckinSettings(): Promise<QoderAutoCheckinSettings> {
+  return await invoke('recover_qoder_auto_checkin_settings');
+}
+
+export async function saveQoderAutoCheckinSettings(
+  settings: QoderAutoCheckinSettings,
+): Promise<QoderAutoCheckinSettings> {
+  return await invoke('save_qoder_auto_checkin_settings', { settings });
+}
+
+export async function checkQoderRewardStatus(accountId: string): Promise<QoderAccount> {
+  return await invoke('check_qoder_reward_status', { accountId });
+}
+
+/** Returns only accounts whose campaign query succeeded; missing IDs may be retried. */
+export async function batchCheckQoderRewardStatuses(accountIds: string[]): Promise<QoderAccount[]> {
+  return await invoke('batch_check_qoder_reward_statuses', { accountIds });
+}

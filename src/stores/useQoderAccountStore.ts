@@ -1,5 +1,14 @@
-
-import { QoderAccount, QoderVariantId, getQoderAccountDisplayEmail, getQoderPlanBadge, getQoderUsage, getQoderAccountVariantId } from '../types/qoder';
+import {
+  QoderAccount,
+  QoderVariantId,
+  getQoderAccountDisplayEmail,
+  getQoderPlanBadge,
+  getQoderUsage,
+  getQoderAccountVariantId,
+  resolveQoderRewardStatus,
+  getQoderRewardStatusExpiryMs,
+  getQoderRewardWindowEndMs,
+} from '../types/qoder';
 import * as qoderService from '../services/qoderService';
 import { createProviderAccountStore } from './createProviderAccountStore';
 import { refreshQoderCurrentAccountIds } from './useQoderCurrentAccountStore';
@@ -8,6 +17,8 @@ const QODER_ACCOUNTS_CACHE_KEY = 'agtools.qoder.accounts.cache.v2';
 const QODER_CURRENT_ACCOUNT_ID_KEY = 'agtools.qoder.current_account_id';
 let accountListLoaded = false;
 let initialLoadRequest: Promise<void> | null = null;
+export const QODER_REWARD_RETRY_DELAY_MS = 60_000;
+const checkedRewardSnapshots = new Map<string, { key: string; retryAt: number }>();
 
 async function loadAccountList(): Promise<QoderAccount[]> {
   const accounts = await qoderService.listQoderAccounts();
@@ -62,6 +73,62 @@ export function ensureQoderAccountsLoaded(): Promise<void> {
     silent: useQoderAccountStore.getState().accounts.length > 0,
   }).finally(() => { initialLoadRequest = null; });
   return initialLoadRequest;
+}
+
+/** Deduplicate pending snapshots; unresolved results retry after a cooldown. */
+export async function checkUnknownQoderRewardStatuses(accounts: QoderAccount[]): Promise<void> {
+  const currentAccounts = useQoderAccountStore.getState().accounts;
+  const existingIds = new Set(currentAccounts.map((account) => account.id));
+  for (const id of checkedRewardSnapshots.keys()) {
+    if (!existingIds.has(id)) checkedRewardSnapshots.delete(id);
+  }
+  const reservations = new Map<string, { key: string; retryAt: number }>();
+  const targets = accounts.filter((account) => {
+    if (resolveQoderRewardStatus(account) !== 'unknown') return false;
+    // For an API window, keep the key stable across repeat responses so an
+    // already-expired window respects the retry cooldown. When endAt is absent,
+    // include the UTC+8 daily reset boundary so yesterday's completed query
+    // cannot suppress tomorrow's refresh forever.
+    const dailyReset = getQoderRewardWindowEndMs(account) == null
+      ? getQoderRewardStatusExpiryMs(account) : null;
+    const key = `${account.reward_claim_status ?? ''}:${account.reward_window_end_at ?? ''}:${dailyReset ?? ''}:${account.reward_query_last_error ?? ''}`;
+    const previous = checkedRewardSnapshots.get(account.id);
+    if (previous?.key === key && Date.now() < previous.retryAt) return false;
+    const reservation = { key, retryAt: Infinity };
+    reservations.set(account.id, reservation);
+    checkedRewardSnapshots.set(account.id, reservation);
+    return true;
+  });
+  if (targets.length === 0) return;
+  const resolved = new Set<string>();
+  try {
+    const updated = await qoderService.batchCheckQoderRewardStatuses(targets.map((account) => account.id));
+    if (updated.length > 0) {
+      await useQoderAccountStore.getState().fetchAccounts({ silent: true });
+      // fetchAccounts records errors without rejecting and can be superseded by
+      // another reload. Only a visible, resolved status can end retries; a successful
+      // response containing an expired window must still use the cooldown.
+      const visible = new Map(useQoderAccountStore.getState().accounts.map((account) => [account.id, account]));
+      for (const account of updated) {
+        const current = visible.get(account.id);
+        if (current
+          && current.reward_claim_status === account.reward_claim_status
+          && current.reward_window_end_at === account.reward_window_end_at
+          && current.reward_status_updated_at === account.reward_status_updated_at
+          && resolveQoderRewardStatus(current) !== 'unknown') {
+          resolved.add(account.id);
+        }
+      }
+    }
+  } finally {
+    for (const [id, reservation] of reservations) {
+      if (checkedRewardSnapshots.get(id) !== reservation) continue;
+      // Known statuses are already excluded above. A permanent reservation would
+      // suppress a later reauthorization that restores the same unknown snapshot.
+      if (resolved.has(id)) checkedRewardSnapshots.delete(id);
+      else reservation.retryAt = Date.now() + QODER_REWARD_RETRY_DELAY_MS;
+    }
+  }
 }
 
 // 定时任务刷新全部变体；页面手动批量刷新仍通过服务按当前标签页变体执行。

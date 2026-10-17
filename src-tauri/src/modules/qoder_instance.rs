@@ -352,18 +352,20 @@ pub fn update_instance_for_variant(
 pub fn delete_instance_for_variant(
     kind: QoderVariantKind,
     instance_id: &str,
+    before_unregister: impl FnOnce(&InstanceProfile) -> Result<(), String>,
 ) -> Result<(), String> {
     delete_instance_with_probe(kind, instance_id, |instance| {
         modules::process::resolve_qoder_instance_pid_for_deletion_checked(
             kind, instance.last_pid, &instance.user_data_dir,
         )
-    })
+    }, before_unregister)
 }
 
 fn delete_instance_with_probe(
     kind: QoderVariantKind,
     instance_id: &str,
     probe: impl FnOnce(&InstanceProfile) -> Result<Option<u32>, String>,
+    before_unregister: impl FnOnce(&InstanceProfile) -> Result<(), String>,
 ) -> Result<(), String> {
     let _creation_guard = crate::modules::instance_storage_cleanup::protect_instance_creation()?;
     let _lock = QODER_INSTANCE_STORE_LOCK
@@ -386,6 +388,8 @@ fn delete_instance_with_probe(
         modules::instance::delete_instance_directory(&dir_path)?;
     }
 
+    // 目录处理成功后由协调者清理关联元数据；失败仍保留登记，允许重试。
+    before_unregister(&store.instances[index])?;
     store.instances.remove(index);
     save_instance_store_for_variant(kind, &store)?;
     Ok(())
@@ -492,17 +496,22 @@ mod directory_tests {
                 copy_source_instance_id: None, init_mode: Some("empty".into()),
             }).unwrap();
             fs::write(profile.join("kept-fixture.txt"), "kept").unwrap();
-            assert!(delete_instance_with_probe(kind, &instance.id, |_| Ok(Some(42)))
+            assert!(delete_instance_with_probe(kind, &instance.id, |_| Ok(Some(42)), |_| panic!("running instance must retain its session"))
                 .unwrap_err().contains("仍在运行"));
             assert_eq!(fs::read_to_string(profile.join("kept-fixture.txt")).unwrap(), "kept");
             assert!(load_instance_store_for_variant(kind).unwrap().instances.iter().any(|item| item.id == instance.id));
-            assert!(delete_instance_with_probe(kind, &instance.id, |_| Err("fixture process probe failed".into()))
+            assert!(delete_instance_with_probe(kind, &instance.id, |_| Err("fixture process probe failed".into()), |_| panic!("unknown process state must retain its session"))
                 .unwrap_err().contains("probe failed"));
             assert!(profile.join("kept-fixture.txt").exists());
             assert!(load_instance_store_for_variant(kind).unwrap().instances.iter().any(|item| item.id == instance.id));
             // Remove only this fixture before the stopped case, avoiding the OS trash.
             fs::remove_dir_all(&profile).unwrap();
-            delete_instance_with_probe(kind, &instance.id, |_| Ok(None)).unwrap();
+            assert!(delete_instance_with_probe(kind, &instance.id, |_| Ok(None), |_| Err("fixture session cleanup failed".into()))
+                .unwrap_err().contains("session cleanup failed"));
+            assert!(load_instance_store_for_variant(kind).unwrap().instances.iter().any(|item| item.id == instance.id));
+            delete_instance_with_probe(kind, &instance.id, |_| Ok(None), |instance| {
+                modules::qoder_account::forget_ide_instance_session(kind, &instance.user_data_dir)
+            }).unwrap();
             assert!(load_instance_store_for_variant(kind).unwrap().instances.is_empty());
         }
     }

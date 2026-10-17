@@ -15,11 +15,64 @@ export interface QoderAccount {
   quota_query_last_error_at?: number | null;
   usage_updated_at?: number | null;
   tags?: string[] | null;
+  reward_claim_status?: string | null;
+  reward_window_end_at?: number | null;
+  reward_status_updated_at?: number | null;
+  reward_query_last_error?: string | null;
   auth_user_info_raw?: unknown;
   auth_user_plan_raw?: unknown;
   auth_credit_usage_raw?: unknown;
   created_at: number;
   last_used: number;
+}
+
+export type QoderRewardStatus = 'claimable' | 'claimed' | 'none' | 'unknown';
+
+export function getQoderRewardWindowEndMs(account: QoderAccount): number | null {
+  return normalizeTimestampMs(account.reward_window_end_at);
+}
+
+/** When the API omits endAt, expire at the next 10:00 UTC+8 campaign
+ * refresh, regardless of the computer's local timezone or DST setting.
+ * The backend stamps reward_status_updated_at on successful queries.
+ */
+export function getQoderRewardStatusExpiryMs(account: QoderAccount): number | null {
+  const serverEnd = getQoderRewardWindowEndMs(account);
+  if (serverEnd != null) return serverEnd;
+
+  const status = account.reward_claim_status?.trim().toUpperCase();
+  if (!['NONE', 'CLAIMED', 'CLAIMABLE', 'UNCLAIMED'].includes(status ?? '')) return null;
+  const checkedAt = normalizeTimestampMs(account.reward_status_updated_at);
+  if (checkedAt == null) return null;
+
+  // Shift the instant to a fixed UTC+8 clock, use UTC date setters (which
+  // never apply the host machine's timezone/DST), then shift it back.
+  const utc8OffsetMs = 8 * 60 * 60 * 1000;
+  const reset = new Date(checkedAt + utc8OffsetMs);
+  reset.setUTCHours(10, 0, 0, 0);
+  if (reset.getTime() <= checkedAt + utc8OffsetMs) {
+    reset.setUTCDate(reset.getUTCDate() + 1);
+  }
+  return reset.getTime() - utc8OffsetMs;
+}
+
+export function resolveQoderRewardStatus(account: QoderAccount, now = Date.now()): QoderRewardStatus {
+  if (account.reward_query_last_error) return 'unknown';
+  const statusUpper = account.reward_claim_status?.trim().toUpperCase();
+  if (!statusUpper) return 'unknown';
+  const expiryMs = getQoderRewardStatusExpiryMs(account);
+  if (expiryMs == null || now >= expiryMs) return 'unknown';
+
+  if (statusUpper === 'CLAIMABLE' || statusUpper === 'UNCLAIMED') {
+    return 'claimable';
+  }
+  if (statusUpper === 'CLAIMED') {
+    return 'claimed';
+  }
+  if (statusUpper === 'NONE') {
+    return 'none';
+  }
+  return 'unknown';
 }
 
 interface UnknownRecord {

@@ -276,10 +276,11 @@ pub async fn qoder_delete_instance(
     if instance_id == DEFAULT_INSTANCE_ID {
         return Err("默认实例不可删除".to_string());
     }
-    let instance = modules::qoder_instance::load_instance_store_for_variant(kind)?.instances
-        .into_iter().find(|instance| instance.id == instance_id).ok_or("实例不存在")?;
-    reconcile_stopped_instance(kind, &instance).await?;
-    modules::qoder_instance::delete_instance_for_variant(kind, &instance_id)
+    // 删除不采纳实例凭据。实例 Owner 保留退出和目录归属检查，账号 Owner 只移除交接。
+    modules::qoder_instance::delete_instance_for_variant(kind, &instance_id, |instance| {
+        modules::qoder_account::forget_ide_instance_session(kind, &instance.user_data_dir)
+            .map_err(|error| format!("实例目录已处理，但交接清理失败；登记已保留，可重试删除：{error}"))
+    })
 }
 
 #[tauri::command]
@@ -302,10 +303,12 @@ pub async fn qoder_start_instance(
         // Never terminate a PID based on an optional/best-effort probe before
         // the checked close has verified its executable and user-data-dir.
         close_instances(kind, &[default_dir_str.clone()], 20)?;
-        modules::qoder_account::reconcile_default_ide_session(kind).await?;
-        let _account_guard = prepare_bound_account_for_instance_start(
-            kind, default_settings.bind_account_id.as_deref(),
-        ).await?;
+        let _account_guard = if default_settings.bind_account_id.as_deref().is_some_and(|id| !id.trim().is_empty()) {
+            modules::qoder_account::reconcile_default_ide_session(kind).await?;
+            prepare_bound_account_for_instance_start(kind, default_settings.bind_account_id.as_deref()).await?
+        } else {
+            modules::qoder_account::resume_unbound_ide_session_for_launch(kind, None).await?
+        };
         let _ = modules::qoder_instance::update_default_pid_for_variant(kind, None)?;
 
         inject_bound_account_for_instance_start(
@@ -352,10 +355,12 @@ pub async fn qoder_start_instance(
     )?;
     // This checked close protects the bound-account injection below.
     close_instances(kind, &[instance.user_data_dir.clone()], 20)?;
-    reconcile_stopped_instance(kind, &instance).await?;
-    let _account_guard = prepare_bound_account_for_instance_start(
-        kind, instance.bind_account_id.as_deref(),
-    ).await?;
+    let _account_guard = if instance.bind_account_id.as_deref().is_some_and(|id| !id.trim().is_empty()) {
+        reconcile_stopped_instance(kind, &instance).await?;
+        prepare_bound_account_for_instance_start(kind, instance.bind_account_id.as_deref()).await?
+    } else {
+        modules::qoder_account::resume_unbound_ide_session_for_launch(kind, Some(&instance.user_data_dir)).await?
+    };
     modules::qoder_instance::validate_instance_directory_for_variant(
         kind, Some(&instance.id), &instance.user_data_dir,
     )?;
