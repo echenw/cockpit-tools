@@ -86,6 +86,7 @@ import {
   VALID_ACCOUNTS_FILTER_VALUE,
 } from '../utils/accountValidityFilter';
 import { emitAccountsChanged } from '../utils/accountSyncEvents';
+import { normalizePlatform } from '../services/platformGroupService';
 import {
   buildPaginatedGroups,
   buildPaginationPageSizeStorageKey,
@@ -284,7 +285,8 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
   const selectClientTarget = useCallback((accountId: string, target: QoderVariantId) => {
     setClientTargets((previous) => ({ ...previous, [accountId]: target }));
   }, []);
-  const filterScope = normalizeAccountsOverviewScope(activeVariant);
+  const accountScope = normalizePlatform(activeVariant);
+  const filterScope = normalizeAccountsOverviewScope(accountScope);
   const currentIds = useQoderCurrentAccountIds(store.accounts);
   const initialFilterPersistenceEnabled =
     readAccountsOverviewFilterPersistenceEnabled(filterScope);
@@ -336,7 +338,7 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
       : 'desc',
   );
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const grouping = usePlatformAccountGroups(activeVariant, () => setSelected(new Set()));
+  const grouping = usePlatformAccountGroups(accountScope, () => setSelected(new Set()));
   const [showAddModal, setShowAddModal] = useState(false);
   const [addTab, setAddTab] = useState<'oauth' | 'token' | 'import'>('oauth');
   const [importVariant, setImportVariant] = useState<QoderVariantId>(activeVariant);

@@ -1,3 +1,5 @@
+import { getQoderAccountRegion } from '../types/qoder';
+
 export const ACCOUNTS_OVERVIEW_FILTER_PERSISTENCE_CHANGED_EVENT =
   'agtools:accounts-overview-filter-persistence-changed';
 
@@ -44,16 +46,38 @@ function getFieldStorageKey(scope: string, field: string): string {
 
 export function normalizeAccountsOverviewScope(rawScope: string): string {
   const normalized = rawScope.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
-  return normalized || 'default';
+  return getQoderAccountRegion(normalized)?.scope ?? (normalized || 'default');
 }
 
 export function resolveAccountsOverviewScopeFromQuickSettingsType(type: string): string {
-  return QUICK_SETTINGS_SCOPE_MAP[type] ?? normalizeAccountsOverviewScope(type);
+  return normalizeAccountsOverviewScope(QUICK_SETTINGS_SCOPE_MAP[type] ?? type);
+}
+
+function prepareQoderRegionFilters(scope: string): void {
+  const region = getQoderAccountRegion(scope);
+  if (!region || localStorage.getItem(getEnabledStorageKey(scope)) !== null) return;
+  // 新地区命名空间首次读取时沿用 IDE 偏好，缺项再取 App；源配置保留。
+  // persist_enabled 最后写入，既作为初始化完成标记，也避免清空筛选后恢复旧值。
+  for (const field of ['view_mode', 'sort_by', 'sort_direction', 'filter_types', 'tag_filter', 'group_by_tag']) {
+    const destination = getFieldStorageKey(scope, field);
+    if (localStorage.getItem(destination) !== null) continue;
+    for (const client of region.clients) {
+      const value = localStorage.getItem(getFieldStorageKey(client, field));
+      if (value !== null) {
+        localStorage.setItem(destination, value);
+        break;
+      }
+    }
+  }
+  const enabled = region.clients.map((client) => localStorage.getItem(getEnabledStorageKey(client)))
+    .find((value) => value !== null) ?? '1';
+  localStorage.setItem(getEnabledStorageKey(scope), enabled);
 }
 
 export function readAccountsOverviewFilterPersistenceEnabled(rawScope: string): boolean {
   const scope = normalizeAccountsOverviewScope(rawScope);
   try {
+    prepareQoderRegionFilters(scope);
     return localStorage.getItem(getEnabledStorageKey(scope)) !== '0';
   } catch {
     return false;
@@ -85,6 +109,7 @@ export function setAccountsOverviewFilterPersistenceEnabled(
 ): void {
   const scope = normalizeAccountsOverviewScope(rawScope);
   try {
+    prepareQoderRegionFilters(scope);
     localStorage.setItem(getEnabledStorageKey(scope), enabled ? '1' : '0');
   } catch {
     // ignore persistence failures
@@ -99,6 +124,7 @@ export function readAccountsOverviewFilterField<T>(
 ): T {
   const scope = normalizeAccountsOverviewScope(rawScope);
   try {
+    prepareQoderRegionFilters(scope);
     const raw = localStorage.getItem(getFieldStorageKey(scope, field));
     if (raw == null) {
       return fallback;
@@ -130,6 +156,7 @@ export function writeAccountsOverviewFilterField<T>(
 ): void {
   const scope = normalizeAccountsOverviewScope(rawScope);
   try {
+    prepareQoderRegionFilters(scope);
     localStorage.setItem(getFieldStorageKey(scope, field), JSON.stringify(value));
   } catch {
     // ignore persistence failures
@@ -139,6 +166,7 @@ export function writeAccountsOverviewFilterField<T>(
 export function removeAccountsOverviewFilterField(rawScope: string, field: string): void {
   const scope = normalizeAccountsOverviewScope(rawScope);
   try {
+    prepareQoderRegionFilters(scope);
     localStorage.removeItem(getFieldStorageKey(scope, field));
   } catch {
     // ignore persistence failures
