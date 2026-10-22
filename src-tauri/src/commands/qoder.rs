@@ -466,8 +466,12 @@ pub async fn inject_qoder_account(
     } else { None };
     if let Some(dir) = &app_dir {
         let previous = qoder_account::read_official_login_candidate(kind, dir)?;
-        if previous.as_ref().is_none_or(|previous| previous.account_id() != account_id) {
-            // A different account can be prepared without interrupting the current App.
+        let target = qoder_account::load_account(&account_id).ok_or("Qoder 账号已被删除")?;
+        if target.native_ide_session
+            || previous.as_ref().is_none_or(|previous| previous.account_id() != account_id)
+        {
+            // Even the same App account must not take over a running default IDE's grant.
+            // Reject that handoff before interrupting the current App.
             // Recheck under a fresh guard after closing/saving its final session below.
             let _preflight_guard = qoder_oauth::prepare_account_for_launch(kind, &account_id).await?;
         }
