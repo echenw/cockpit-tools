@@ -2230,16 +2230,25 @@ fn reconcile_instance_snapshot(
     Ok(can_resume)
 }
 
-/// Only an explicit launch may reclaim a stopped default IDE's grant for rotation.
-/// Caller holds the account lock; running clients never receive a hot SQLite write.
+/// Only an explicit launch may reclaim a stopped default IDE's grant.
+/// Caller holds the account lock before reusing or rotating its credentials.
 pub(crate) fn release_stopped_native_ide_for_launch(account: &QoderAccount) -> Result<(), String> {
+    release_stopped_native_ide_for_launch_with_probe(account, |kind| {
+        let dir = crate::modules::qoder_instance::get_default_qoder_user_data_dir_for_variant(kind)?;
+        if crate::modules::process::resolve_qoder_instance_pid_for_deletion_checked(kind, None, &dir.to_string_lossy())?.is_some() {
+            return Err("原生 IDE 正在管理该授权，请先停止客户端并回收会话后再切换".into());
+        }
+        Ok(read_local_snapshot_for_variant(kind)?.map(|snapshot| OfficialLoginCandidate { snapshot }))
+    })
+}
+
+pub(crate) fn release_stopped_native_ide_for_launch_with_probe(
+    account: &QoderAccount,
+    read_stopped: impl FnOnce(QoderVariantKind) -> Result<Option<OfficialLoginCandidate>, String>,
+) -> Result<(), String> {
     if !account.native_ide_session { return Ok(()); }
     let kind = account_variant_kind(account)?;
-    let dir = crate::modules::qoder_instance::get_default_qoder_user_data_dir_for_variant(kind)?;
-    if crate::modules::process::resolve_qoder_instance_pid_for_deletion_checked(kind, None, &dir.to_string_lossy())?.is_some() {
-        return Err("原生 IDE 正在管理该授权，请先停止客户端并回收会话后再切换".into());
-    }
-    if let Some(snapshot) = read_local_snapshot_for_variant(kind)? {
+    if let Some(OfficialLoginCandidate { snapshot }) = read_stopped(kind)? {
         if extract_snapshot_user_id(&snapshot).as_ref() != account.user_id.as_ref() {
             return Err("默认 IDE 登录身份已变化，未接管其他用户的凭据".into());
         }
