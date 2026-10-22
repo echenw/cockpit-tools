@@ -54,6 +54,15 @@ pub(crate) fn client_session_lock(
     account_refresh_lock(&format!("client-session:{}", kind.provider_key()))
 }
 
+// IDE 操作还须等同地区 App 完成关闭与最终凭据保存；固定在账号锁之前获取。
+// App 操作的调用方已持有该锁，不能再次获取。
+async fn lock_app_session_for_ide(
+    kind: QoderVariantKind,
+) -> Result<Option<tokio::sync::OwnedMutexGuard<()>>, String> {
+    if kind.is_app() { return Ok(None); }
+    Ok(Some(client_session_lock(kind.app_variant())?.lock_owned().await))
+}
+
 const DEFAULT_LOGIN_BASE_URL: &str = "https://qoder.com/device/selectAccounts";
 const DEFAULT_OPENAPI_BASE_URL: &str = "https://openapi.qoder.sh";
 const QODER_DEVICE_LOGIN_CHALLENGE_METHOD: &str = "S256";
@@ -1299,6 +1308,20 @@ where
     Ok(Some(if want_job_line { target.clone() } else { query_usage().await? }))
 }
 
+async fn refresh_app_usage_if_owned<F, Fut>(
+    target: &QoderAccount,
+    session: Option<QoderAccount>,
+    want_job_line: bool,
+    query_usage: F,
+) -> Result<Option<QoderAccount>, String>
+where
+    F: FnOnce(QoderAccount) -> Fut,
+    Fut: std::future::Future<Output = Result<QoderAccount, String>>,
+{
+    let Some(session) = session else { return Ok(None); };
+    Ok(Some(if want_job_line { target.clone() } else { query_usage(session).await? }))
+}
+
 async fn refresh_variant_token_for_account(
     variant_key: &str,
     account_id: &str,
@@ -1316,13 +1339,16 @@ async fn refresh_variant_token_for_account(
         // 不能先轮换账号库凭据，再让本地归属保护拒绝官方客户端的分支。
         return Ok(account);
     }
-    if let Some(session) = qoder_account::app_owned_session(&target)? {
-        // job 会话同样由 App 管理；device 分支只查询额度，绝不兑换 refresh token。
-        return if want_job_line {
-            Ok(target)
-        } else {
-            refresh_account_usage(&session, &params).await
-        };
+    let app_session = qoder_account::app_owned_session(&saved.id)?;
+    if let Some(account) = refresh_app_usage_if_owned(&target, app_session, want_job_line,
+        |session| async move {
+            let app_params = resolve_qoder_variant_params(
+                qoder_account::account_variant_kind(&session)?.provider_key(),
+            )?;
+            refresh_account_usage(&session, &app_params).await
+        }).await? {
+        // 任意客户端入口均遵守 App 归属；查询使用官方 App 的 AT 和请求参数。
+        return Ok(account);
     }
     let stored = target.auth_user_info_raw.clone().unwrap_or(Value::Null);
     let refresh_token = if want_job_line {
@@ -1464,6 +1490,7 @@ pub async fn refresh_account_token_for_variant(
     let kind = QoderVariantKind::parse(Some(variant_key))?;
     let session_lock = client_session_lock(kind)?;
     let _session_guard = session_lock.lock().await;
+    let _app_guard = lock_app_session_for_ide(kind).await?;
     let lock = account_refresh_lock(account_id)?;
     let _guard = lock.lock().await;
     refresh_variant_token_for_account(variant_key, account_id, want_job_line).await
@@ -1478,6 +1505,7 @@ pub(crate) async fn prepare_account_for_launch(
 ) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
     prepare_account_for_launch_with_native_ide_release(
         kind, account_id, qoder_account::release_stopped_native_ide_for_launch,
+        |account| qoder_account::app_owned_session(&account.id),
     ).await
 }
 
@@ -1485,12 +1513,20 @@ async fn prepare_account_for_launch_with_native_ide_release(
     kind: QoderVariantKind,
     account_id: &str,
     release_native_ide: impl FnOnce(&QoderAccount) -> Result<(), String>,
+    app_session: impl FnOnce(&QoderAccount) -> Result<Option<QoderAccount>, String>,
 ) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
+    let _app_guard = lock_app_session_for_ide(kind).await?;
     let guard = account_refresh_lock(account_id)?.lock_owned().await;
     let mut saved = qoder_account::load_account(account_id)
         .ok_or_else(|| format!("Qoder 账号不存在: {}", account_id))?;
     if !qoder_account::account_supports_variant(&saved, kind) {
         return Err("Qoder 国内与国际账号不能互通".into());
+    }
+    if !kind.is_app() && app_session(&saved)?.is_some() {
+        return Err(format!(
+            "该账号正由 {} App 管理共享授权，请先退出该 App 并导入本地最新凭据，再切换 IDE",
+            kind.app_variant().display_name(),
+        ));
     }
     if qoder_account::has_unreconciled_ide_instances(&saved)? {
         return Err("该账号仍有未回收的 IDE 实例会话，请先停止并回收实例再准备或注入凭据".into());
@@ -2532,7 +2568,7 @@ fn campaign_session(account: &QoderAccount) -> Result<QoderAccount, String> {
     if saved_oauth_grant_is_current(account) {
         return Ok(account.clone());
     }
-    Ok(qoder_account::app_owned_session(account)?.unwrap_or_else(|| account.clone()))
+    Ok(qoder_account::app_owned_session(&account.id)?.unwrap_or_else(|| account.clone()))
 }
 
 /// Query after a claim without rotating credentials. Match normal refresh/switch
@@ -2541,22 +2577,18 @@ pub(crate) async fn refresh_claimed_account_usage(
     account_id: &str,
     params: &QoderVariantParams,
 ) -> Result<QoderAccount, String> {
-    let session_lock = if params.kind.is_app() {
-        Some(client_session_lock(params.kind)?)
-    } else {
-        None
-    };
-    let _session_guard = match session_lock.as_ref() {
-        Some(lock) => Some(lock.lock().await),
-        None => None,
-    };
+    let session_lock = client_session_lock(params.kind.app_variant())?;
+    let _session_guard = session_lock.lock().await;
     let lock = account_refresh_lock(account_id)?;
     let _guard = lock.lock().await;
     let saved = qoder_account::load_account(account_id)
         .ok_or_else(|| format!("Qoder 账号不存在: {}", account_id))?;
     let target = qoder_account::account_for_variant(&saved, params.kind)?;
     let session = campaign_session(&target)?;
-    refresh_account_usage(&session, params).await
+    let params = resolve_qoder_variant_params(
+        qoder_account::account_variant_kind(&session)?.provider_key(),
+    )?;
+    refresh_account_usage(&session, &params).await
 }
 
 pub async fn claim_daily_reward(account_id: &str) -> Result<QoderClaimRewardResult, String> {
@@ -2826,7 +2858,8 @@ mod tests {
 
             // A cross-region request cannot release the native client's grant.
             assert!(prepare_account_for_launch_with_native_ide_release(other_region, &grant.id,
-                |_| panic!("invalid region must be rejected before reclaiming credentials"))
+                |_| panic!("invalid region must be rejected before reclaiming credentials"),
+                |account| qoder_account::app_owned_session(&account.id))
                 .await.unwrap_err().contains("不能互通"));
 
             // Only the process/filesystem observation is replaced. The real account
@@ -2838,7 +2871,7 @@ mod tests {
                         assert_eq!(source, ide);
                         Err(error.to_string())
                     })
-                }).await.unwrap_err();
+                }, |account| qoder_account::app_owned_session(&account.id)).await.unwrap_err();
                 assert_eq!(rejected, error);
                 assert_eq!(serde_json::to_value(qoder_account::load_account(&grant.id).unwrap()).unwrap(), before);
                 assert!(lock.try_lock().is_ok(), "a rejected handoff must release the refresh lock");
@@ -2862,7 +2895,7 @@ mod tests {
                     assert_eq!(source, ide);
                     qoder_account::read_official_login_candidate(source, &profile)
                 })
-            }).await.unwrap();
+            }, |account| qoder_account::app_owned_session(&account.id)).await.unwrap();
             assert!(lock.try_lock().is_err(), "handoff remains locked until injection/start finishes");
             let released = qoder_account::load_account(&grant.id).unwrap();
             assert!(!released.native_ide_session);
@@ -2881,6 +2914,106 @@ mod tests {
             let guard = prepare_account_for_launch(app, &grant.id).await.unwrap();
             assert_eq!(serde_json::to_value(qoder_account::load_account(&grant.id).unwrap()).unwrap(),
                 serde_json::to_value(&handed).unwrap());
+            drop(guard);
+        }
+    }
+
+    #[tokio::test]
+    async fn ide_refresh_preserves_the_regional_app_grant_and_launch_waits_for_its_handoff() {
+        let _env = crate::modules::test_support::env_lock().lock().unwrap();
+        let dir = std::env::temp_dir().join(format!("qoder-regional-app-refresh-{}", uuid::Uuid::new_v4()));
+        struct Restore { previous: Option<std::ffi::OsString>, dir: PathBuf }
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                match &self.previous {
+                    Some(previous) => std::env::set_var("COCKPIT_TOOLS_DATA_DIR", previous),
+                    None => std::env::remove_var("COCKPIT_TOOLS_DATA_DIR"),
+                }
+                let _ = std::fs::remove_dir_all(&self.dir);
+            }
+        }
+        let _restore = Restore { previous: std::env::var_os("COCKPIT_TOOLS_DATA_DIR"), dir: dir.clone() };
+        std::env::set_var("COCKPIT_TOOLS_DATA_DIR", &dir);
+        for (ide, app) in [
+            (QoderVariantKind::Qoder, QoderVariantKind::QoderApp),
+            (QoderVariantKind::QoderCnIde, QoderVariantKind::QoderCnApp),
+        ] {
+            let mut grant = qoder_account::save_oauth_grant_for_variant(app.provider_key(), serde_json::json!({
+                "id":format!("regional-app-refresh-{}", ide.provider_key()),
+                "token":"dt-regional-app-fixture", "refreshToken":"drt-kept-app-fixture",
+                "expiresAt":(chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339(),
+            })).unwrap();
+            grant.client_auth.insert(ide.provider_key().into(), serde_json::json!({
+                "id":grant.user_id, "token":"dt-cached-ide-fixture", "status":AUTH_STATUS_AUTHORIZED,
+                "expiresAt":(chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339(),
+            }));
+            let grant = qoder_account::upsert_account_record(grant).unwrap();
+            crate::modules::provider_current_state::set_current_account_id(app.provider_key(), Some(&grant.id)).unwrap();
+            let target = qoder_account::account_for_variant(&grant, ide).unwrap();
+            assert!(client_access_token_is_current(target.auth_user_info_raw.as_ref().unwrap()));
+            assert_eq!(extract_access_token_from_account(&target).as_deref(), Some("dt-cached-ide-fixture"));
+            // Keep the real regional Owner and current-account store. Replace only
+            // process/file observations; the remembered App also owns a missing file.
+            let observe = |target: &QoderAccount| qoder_account::app_owned_session_with_probe(
+                &target.id, |kind| { assert_eq!(kind, app); Ok(true) }, |_| Ok(None),
+            );
+            let session = observe(&target).unwrap().expect("an IDE request must still see the active App");
+            let result = refresh_app_usage_if_owned(&target, Some(session.clone()), false, |session| async move {
+                assert_eq!(qoder_account::account_variant_kind(&session).unwrap(), app);
+                assert_eq!(extract_access_token_from_account(&session).as_deref(), Some("dt-regional-app-fixture"));
+                qoder_account::update_account_usage(&session.id, serde_json::json!({"remaining":123}), None)
+            }).await.unwrap().expect("App ownership must select usage-only refresh");
+            assert_eq!(result.credits_remaining, Some(123.0));
+            let saved = qoder_account::load_account(&grant.id).unwrap();
+            assert_eq!(saved.shared_refresh_token, grant.shared_refresh_token);
+            assert_eq!(saved.auth_user_info_raw, grant.auth_user_info_raw);
+            assert_eq!(saved.variant, grant.variant);
+            assert!(!saved.native_ide_session);
+
+            let error = refresh_app_usage_if_owned(&target, Some(session.clone()), false, |_| async {
+                Err::<QoderAccount, String>("fixture quota failure".into())
+            }).await.unwrap_err();
+            assert_eq!(error, "fixture quota failure", "a query failure must not fall through to RT rotation");
+            let app_target = qoder_account::account_for_variant(&grant, app).unwrap();
+            assert!(refresh_app_usage_if_owned(&app_target, Some(session), true,
+                |_| std::future::ready(Err::<QoderAccount, String>("native job credentials must not be refreshed".into())))
+                .await.unwrap().is_some());
+            assert!(refresh_app_usage_if_owned(&target, None, false,
+                |_| std::future::ready(Err::<QoderAccount, String>("an offline account must use normal credential preparation".into())))
+                .await.unwrap().is_none());
+
+            let before = serde_json::to_value(&saved).unwrap();
+            let app_lock = client_session_lock(app).unwrap();
+            let account_lock = account_refresh_lock(&grant.id).unwrap();
+            let rejected = prepare_account_for_launch_with_native_ide_release(ide, &grant.id,
+                |_| panic!("the active App must be checked before native IDE release"), |saved| {
+                    assert!(app_lock.try_lock().is_err());
+                    assert!(account_lock.try_lock().is_err());
+                    observe(saved)
+                }).await.unwrap_err();
+            assert!(rejected.contains("管理共享授权"));
+            assert_eq!(serde_json::to_value(qoder_account::load_account(&grant.id).unwrap()).unwrap(), before);
+            assert!(account_lock.try_lock().is_ok());
+
+            // A switch holding the App session lock must finish before an IDE
+            // refresh/launch can acquire an account lock or observe its final session.
+            let held = app_lock.clone().lock_owned().await;
+            let waiting = lock_app_session_for_ide(ide);
+            tokio::pin!(waiting);
+            tokio::select! {
+                biased;
+                _ = &mut waiting => panic!("IDE operation bypassed the App session lock"),
+                _ = std::future::ready(()) => {},
+            }
+            assert!(account_lock.try_lock().is_ok(), "waiting must not hold an account lock");
+            tokio::select! {
+                biased;
+                result = lock_app_session_for_ide(app) => assert!(result.unwrap().is_none()),
+                _ = std::future::ready(()) => panic!("App operations must not reacquire their own session lock"),
+            }
+            drop(held);
+            let guard = waiting.await.unwrap().unwrap();
+            assert!(app_lock.try_lock().is_err());
             drop(guard);
         }
     }

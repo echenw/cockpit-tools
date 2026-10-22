@@ -1827,7 +1827,7 @@ fn read_qoder_app_snapshot(kind: QoderVariantKind) -> Result<Option<QoderSnapsho
         ));
     }
     let (auth_path, user_data) = resolve_qoder_app_auth_path(kind)?;
-    if !auth_path.exists() {
+    if !auth_path.try_exists().map_err(|error| format!("检查 Qoder App 本地凭据失败: {error}"))? {
         return Ok(None);
     }
     let value = decode_qoder_app_auth_value(&auth_path, &user_data, kind)?;
@@ -1921,19 +1921,19 @@ pub(crate) fn read_official_login_candidate(
     Ok(Some(OfficialLoginCandidate { snapshot }))
 }
 
-fn app_session_matches_account(snapshot: &QoderSnapshot, account: &QoderAccount) -> bool {
+/// Some(false) 表示已确认是另一账号；None 表示身份不可确认，仍需保护记忆中的会话。
+fn app_session_identity_matches(snapshot: &QoderSnapshot, account: &QoderAccount) -> Option<bool> {
     if !QoderVariantKind::parse(snapshot.variant.as_deref()).is_ok_and(|kind| kind.is_app() && account_supports_variant(account, kind)) {
-        return false;
+        return None;
     }
     // App 的 user.id 是权威身份；不要用邮箱兜底把另一账号的凭证借过来。
     let local_id = snapshot.user_info_raw.as_ref()
         .and_then(|raw| raw.get("user"))
         .and_then(|user| user.get("id"))
         .and_then(Value::as_str);
-    match (local_id, account.user_id.as_deref()) {
-        (Some(local), Some(saved)) => !local.is_empty() && local == saved,
-        _ => false,
-    }
+    let local = local_id.filter(|id| !id.trim().is_empty())?;
+    let saved = account.user_id.as_deref().filter(|id| !id.trim().is_empty())?;
+    Some(local == saved)
 }
 
 #[cfg(test)]
@@ -2260,20 +2260,36 @@ pub(crate) fn release_stopped_native_ide_for_launch_with_probe(
 
 /// 本机 App 会话由官方客户端续期。读取其最新凭证仅供本次请求，不写文件/账号库。
 /// 即使认证文件暂时消失，记忆中的当前账号也不能由后台接管续期。
-pub(crate) fn app_owned_session(account: &QoderAccount) -> Result<Option<QoderAccount>, String> {
-    let kind = account_variant_kind(account)?;
-    if !kind.is_app() {
+pub(crate) fn app_owned_session(account_id: &str) -> Result<Option<QoderAccount>, String> {
+    app_owned_session_with_probe(account_id, |kind| {
+        let data_dir = crate::modules::process::qoder_variant_default_user_data_dir(kind)
+            .ok_or_else(|| "无法确定 Qoder App 默认数据目录，拒绝后台续期".to_string())?;
+        // 按运行快照检查目录，不要求 App 仍已安装；仅安装 IDE 的机器也可正常刷新。
+        crate::modules::process::resolve_qoder_instance_pid_for_deletion_checked(kind, None, &data_dir)
+            .map(|pid| pid.is_some())
+    }, |kind| read_qoder_app_snapshot(kind)
+        .map(|snapshot| snapshot.map(|snapshot| OfficialLoginCandidate { snapshot })))
+}
+
+pub(crate) fn app_owned_session_with_probe(
+    account_id: &str,
+    is_running: impl FnOnce(QoderVariantKind) -> Result<bool, String>,
+    read_snapshot: impl FnOnce(QoderVariantKind) -> Result<Option<OfficialLoginCandidate>, String>,
+) -> Result<Option<QoderAccount>, String> {
+    // 从账号 Owner 读取正典记录，不能用请求的 IDE 投影跳过 App，
+    // 也不能把 IDE 的 AT 当作认证文件暂时缺失时的 App AT。
+    let account = load_account(account_id).ok_or("Qoder 账号不存在，无法确认 App 会话归属")?;
+    let kind = account_variant_kind(&account)?.app_variant();
+    // auth.v1.dat 在客户端退出后仍留在磁盘上；停止的 App 不占用当前会话。
+    if !is_running(kind)? {
         return Ok(None);
     }
-    // auth.v1.dat 在客户端退出后仍留在磁盘上；只有主进程运行时才由官方客户端续期。
-    let data_dir = crate::modules::process::qoder_variant_default_user_data_dir(kind)
-        .ok_or_else(|| "无法确定 Qoder App 默认数据目录，拒绝后台续期".to_string())?;
-    if crate::modules::process::resolve_qoder_pid_for_variant_checked(kind, None, Some(&data_dir))?.is_none() {
-        return Ok(None);
-    }
+    let account = account_for_variant(&account, kind)?;
     let current = crate::modules::provider_current_state::get_current_account_id(kind.provider_key())?;
-    match read_qoder_app_snapshot(kind) {
-        Ok(snapshot) => Ok(select_app_owned_session(account, snapshot, current.as_deref())),
+    match read_snapshot(kind) {
+        Ok(candidate) => Ok(select_app_owned_session(
+            &account, candidate.map(|candidate| candidate.snapshot), current.as_deref(),
+        )),
         Err(err) if current.as_deref() == Some(account.id.as_str()) => {
             // 当前账号的 auth 文件可能正由官方客户端原子替换。此时只能保守地使用
             // 账号库快照查询，禁止把它当作离线账号去兑换 refresh token。
@@ -2283,7 +2299,7 @@ pub(crate) fn app_owned_session(account: &QoderAccount) -> Result<Option<QoderAc
                 account.id,
                 err
             ));
-            Ok(Some(account.clone()))
+            Ok(Some(account))
         }
         Err(err) => Err(err),
     }
@@ -2295,10 +2311,15 @@ fn select_app_owned_session(
     current_id: Option<&str>,
 ) -> Option<QoderAccount> {
     if let Some(snapshot) = snapshot {
-        if app_session_matches_account(&snapshot, account) {
-            let mut session = account.clone();
-            session.auth_user_info_raw = snapshot.user_info_raw;
-            return Some(session);
+        match app_session_identity_matches(&snapshot, account) {
+            Some(true) => {
+                let mut session = account.clone();
+                session.auth_user_info_raw = snapshot.user_info_raw;
+                return Some(session);
+            }
+            // 官方 App 已明确使用另一账号，旧当前账号记录不再代表会话归属。
+            Some(false) => return None,
+            None => {},
         }
     }
     (current_id == Some(account.id.as_str())).then(|| account.clone())
@@ -2351,7 +2372,7 @@ fn save_native_app_snapshot(mut snapshot: QoderSnapshot) -> Result<NativeSnapsho
     let accounts = list_accounts_from_index(&index);
     let account = if let Some(mut existing) = accounts
         .into_iter()
-        .find(|account| app_session_matches_account(&snapshot, account))
+        .find(|account| app_session_identity_matches(&snapshot, account) == Some(true))
     {
         let kind = QoderVariantKind::parse(snapshot.variant.as_deref())?;
         if account_variant_kind(&existing)? != kind {
@@ -3779,7 +3800,74 @@ mod tests {
     }
 
     #[test]
-    fn app_session_uses_official_credentials_without_adopting_another_identity() {
+    fn ide_requests_observe_the_regional_app_owner_without_changing_saved_credentials() {
+        let _env = crate::modules::test_support::env_lock().lock().unwrap();
+        let _dir = DataDirGuard::new("ide-observes-app-owner");
+        for (ide, app, other_app) in [
+            (QoderVariantKind::Qoder, QoderVariantKind::QoderApp, QoderVariantKind::QoderCnApp),
+            (QoderVariantKind::QoderCnIde, QoderVariantKind::QoderCnApp, QoderVariantKind::QoderApp),
+        ] {
+            let mut saved = save_oauth_grant_for_variant(ide.provider_key(), serde_json::json!({
+                "id":format!("app-owner-{}", ide.provider_key()),
+                "token":"dt-saved-ide-fixture", "refreshToken":"drt-saved-fixture",
+            })).unwrap();
+            saved.client_auth.insert(app.provider_key().into(), serde_json::json!({
+                "token":"dt-saved-app-fixture", "id":saved.user_id,
+            }));
+            let saved = upsert_account_record(saved).unwrap();
+            let target = account_for_variant(&saved, ide).unwrap();
+            let before = serde_json::to_value(&saved).unwrap();
+            let snapshot = QoderSnapshot {
+                variant: stored_variant_key(app),
+                user_info_raw: Some(serde_json::json!({
+                    "schemaVersion":1, "token":"dt-official-app-fixture",
+                    "refreshToken":"drt-official-app-fixture", "user":{"id":saved.user_id},
+                })),
+                ..Default::default()
+            };
+            let observe = |snapshot: Option<QoderSnapshot>| app_owned_session_with_probe(
+                &target.id, |observed| { assert_eq!(observed, app); Ok(true) },
+                |_| Ok(snapshot.map(|snapshot| OfficialLoginCandidate { snapshot })),
+            );
+            let session = observe(Some(snapshot.clone())).unwrap().unwrap();
+            assert_eq!(account_variant_kind(&session).unwrap(), app);
+            assert_eq!(session.auth_user_info_raw.as_ref().unwrap()["token"], "dt-official-app-fixture");
+            assert_eq!(session.id, saved.id);
+
+            let mut other_user = snapshot.clone();
+            other_user.user_info_raw.as_mut().unwrap()["user"]["id"] = Value::from("other-user-fixture");
+            assert!(observe(Some(other_user)).unwrap().is_none());
+            let mut other_region = snapshot.clone();
+            other_region.variant = stored_variant_key(other_app);
+            assert!(observe(Some(other_region)).unwrap().is_none());
+
+            crate::modules::provider_current_state::set_current_account_id(app.provider_key(), Some(&saved.id)).unwrap();
+            let mut other_user = snapshot.clone();
+            other_user.user_info_raw.as_mut().unwrap()["user"]["id"] = Value::from("other-user-fixture");
+            assert!(observe(Some(other_user)).unwrap().is_none(),
+                "confirmed native identity must override the remembered current account for IDE requests");
+            assert_eq!(crate::modules::provider_current_state::get_current_account_id(app.provider_key()).unwrap(),
+                Some(saved.id.clone()), "ownership observation must not rewrite the current-account mapping");
+            let remembered = observe(None).unwrap().unwrap();
+            assert_eq!(account_variant_kind(&remembered).unwrap(), app);
+            assert_eq!(remembered.auth_user_info_raw.as_ref().unwrap()["token"], "dt-saved-app-fixture");
+            let unreadable = || app_owned_session_with_probe(&target.id, |_| Ok(true),
+                |_| Err("fixture unreadable auth file".into()));
+            assert!(unreadable().unwrap().is_some(), "a current App keeps ownership during atomic file replacement");
+            crate::modules::provider_current_state::set_current_account_id(app.provider_key(), None).unwrap();
+            assert!(unreadable().is_err(), "an unreadable session is not confirmed absent");
+
+            assert!(app_owned_session_with_probe(&target.id, |observed| {
+                assert_eq!(observed, app); Ok(false)
+            }, |_| panic!("a stopped or uninstalled App must not require an auth file")).unwrap().is_none());
+            assert!(app_owned_session_with_probe(&target.id, |_| Err("fixture process probe failure".into()),
+                |_| panic!("failed process observation must not read credentials")).is_err());
+            assert_eq!(serde_json::to_value(load_account(&saved.id).unwrap()).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn app_session_uses_confirmed_identity_before_the_remembered_current_account() {
         for kind in [QoderVariantKind::QoderApp, QoderVariantKind::QoderCnApp] {
             let mut account = variant_test_account("active", Some(kind.provider_key()));
             account.user_id = Some("user-a".to_string());
@@ -3809,8 +3897,15 @@ mod tests {
 
             snapshot.user_info_raw.as_mut().unwrap()["user"]["id"] = Value::from("user-b");
             assert!(select_app_owned_session(&account, Some(snapshot.clone()), None).is_none());
-            let remembered = select_app_owned_session(&account, Some(snapshot.clone()), Some("active")).unwrap();
-            assert_eq!(remembered.auth_user_info_raw, account.auth_user_info_raw);
+            assert!(select_app_owned_session(&account, Some(snapshot.clone()), Some("active")).is_none());
+
+            for unconfirmed_id in [Value::Null, Value::from("")] {
+                let mut unconfirmed = snapshot.clone();
+                unconfirmed.user_info_raw.as_mut().unwrap()["user"]["id"] = unconfirmed_id;
+                let remembered = select_app_owned_session(&account, Some(unconfirmed), Some("active")).unwrap();
+                assert_eq!(remembered.auth_user_info_raw, account.auth_user_info_raw,
+                    "an unconfirmed identity must retain the remembered session without adopting its credentials");
+            }
 
             snapshot.user_info_raw.as_mut().unwrap()["user"]["id"] = Value::from("user-a");
             snapshot.variant = Some("qoder_cn_ide".to_string());
