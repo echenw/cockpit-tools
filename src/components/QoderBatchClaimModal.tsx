@@ -10,6 +10,7 @@ import {
 } from '../types/qoder';
 import * as qoderService from '../services/qoderService';
 import { useModalScrollLock } from '../hooks/useModalScrollLock';
+import { useModalFocusTrap } from '../hooks/useModalFocusTrap';
 import { useEscCloseTopmost } from '../hooks/useEscClose';
 import { useQoderRewardClock } from '../hooks/useQoderRewardClock';
 import './QoderBatchClaimModal.css';
@@ -82,13 +83,15 @@ export function QoderBatchClaimModal({
   const stopRequestedRef = useRef(false);
   const batchIdRef = useRef<string | null>(null);
   const accountsOnOpenRef = useRef(accounts);
+  const dialogRef = useRef<HTMLDivElement>(null);
 
   useModalScrollLock(true);
+  useModalFocusTrap(dialogRef, true);
   useEscCloseTopmost(true, () => {
     if (!running && !savingSettings) {
       onClose();
     }
-  });
+  }, dialogRef);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -333,7 +336,7 @@ export function QoderBatchClaimModal({
 
   return createPortal(
     <div className="qoder-batch-claim-overlay" onClick={running || savingSettings ? undefined : onClose}>
-      <div className="qoder-batch-claim-modal" role="dialog" aria-modal="true" aria-labelledby="qoder-batch-claim-title" onClick={(e) => e.stopPropagation()}>
+      <div ref={dialogRef} tabIndex={-1} className="qoder-batch-claim-modal" role="dialog" aria-modal="true" aria-labelledby="qoder-batch-claim-title" onClick={(e) => e.stopPropagation()}>
         <div className="qoder-batch-claim-header">
           <div className="qoder-batch-claim-heading">
             <div className="qoder-batch-claim-icon">
