@@ -771,7 +771,38 @@ pub async fn save_account_groups(data: String) -> Result<(), String> {
         .map_err(|e| format!("Failed to write groups: {}", e))
 }
 
+fn qoder_group_sources(platform: &str) -> Option<(&'static str, [&'static str; 2])> {
+    match platform.trim().to_ascii_lowercase().as_str() {
+        "qoder" | "qoder_app" | "qoder_intl" => Some(("qoder_intl", ["qoder", "qoder_app"])),
+        "qoder_cn_ide" | "qoder_cn_app" | "qoder_cn" => {
+            Some(("qoder_cn", ["qoder_cn_ide", "qoder_cn_app"]))
+        }
+        _ => None,
+    }
+}
+
+static QODER_GROUP_STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn lock_qoder_groups(platform: &str) -> Result<Option<std::sync::MutexGuard<'static, ()>>, String> {
+    qoder_group_sources(platform)
+        .map(|_| QODER_GROUP_STORE_LOCK.lock().map_err(|_| "获取 Qoder 地区分组锁失败".to_string()))
+        .transpose()
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyQoderAccountGroup {
+    id: String,
+    name: String,
+    account_ids: Vec<String>,
+    #[serde(flatten)]
+    fields: serde_json::Map<String, serde_json::Value>,
+}
+
 fn resolve_platform_groups_filename(platform: &str) -> String {
+    if let Some((scope, _)) = qoder_group_sources(platform) {
+        return format!("{}_account_groups.json", scope);
+    }
     let lower = platform.trim().to_ascii_lowercase();
     match lower.as_str() {
         "antigravity" | "gemini" => GROUPS_FILE.to_string(),
@@ -793,20 +824,67 @@ fn resolve_platform_groups_filename(platform: &str) -> String {
     }
 }
 
+fn load_platform_groups_at_dir(dir: &std::path::Path, platform: &str) -> Result<String, String> {
+    let path = dir.join(resolve_platform_groups_filename(platform));
+    let Some((_, sources)) = qoder_group_sources(platform) else {
+        if !path.exists() {
+            return Ok("[]".to_string());
+        }
+        return std::fs::read_to_string(&path)
+            .map_err(|error| format!("Failed to read platform groups for {}: {}", platform, error));
+    };
+    let _guard = lock_qoder_groups(platform)?;
+    match std::fs::read_to_string(&path) {
+        Ok(data) => return Ok(data),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("Failed to read platform groups for {}: {}", platform, error)),
+    }
+    let mut merged: Vec<LegacyQoderAccountGroup> = Vec::new();
+    for source in sources {
+        let source_path = dir.join(format!("{}_account_groups.json", source));
+        let data = match std::fs::read_to_string(&source_path) {
+            Ok(data) => data,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(format!("读取 {} 历史分组失败: {}", source, error)),
+        };
+        let groups: Vec<LegacyQoderAccountGroup> = serde_json::from_str(&data)
+            .map_err(|error| format!("解析 {} 历史分组失败: {}", source, error))?;
+        for group in groups {
+            if group.id.trim().is_empty() {
+                return Err(format!("{} 历史分组缺少有效 ID", source));
+            }
+            if let Some(existing) = merged.iter_mut().find(|existing| existing.id == group.id) {
+                for account_id in group.account_ids {
+                    if !existing.account_ids.contains(&account_id) {
+                        existing.account_ids.push(account_id);
+                    }
+                }
+                // 同 ID 的名称/设置沿用 IDE 值；App 补齐未设置的字段，原文件保留。
+                for (key, value) in group.fields {
+                    existing.fields.entry(key).or_insert(value);
+                }
+            } else {
+                merged.push(group);
+            }
+        }
+    }
+    let data = serde_json::to_string_pretty(&merged)
+        .map_err(|error| format!("序列化 Qoder 地区分组失败: {}", error))?;
+    // 新文件存在后即为唯一 Owner；即使用户删空分组，也不再重放历史文件。
+    // 只在全部源文件成功读取后原子保存，失败时保留源文件供重试。
+    modules::atomic_write::write_string_atomic(&path, &data)?;
+    Ok(data)
+}
+
 #[tauri::command]
 pub async fn load_platform_account_groups(platform: String) -> Result<String, String> {
-    let filename = resolve_platform_groups_filename(&platform);
-    let path = modules::account::get_data_dir()?.join(filename);
-    if !path.exists() {
-        return Ok("[]".to_string());
-    }
-    std::fs::read_to_string(&path)
-        .map_err(|e| format!("Failed to read platform groups for {}: {}", platform, e))
+    load_platform_groups_at_dir(&modules::account::get_data_dir()?, &platform)
 }
 
 #[tauri::command]
 pub async fn save_platform_account_groups(platform: String, data: String) -> Result<(), String> {
     validate_account_groups_payload(&data)?;
+    let _guard = lock_qoder_groups(&platform)?;
     let dir = modules::account::get_data_dir()?;
     if !dir.exists() {
         std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create dir: {}", e))?;
@@ -821,8 +899,59 @@ pub async fn save_platform_account_groups(platform: String, data: String) -> Res
 mod tests {
     use super::{
         normalize_antigravity_runtime_target, resolve_antigravity_switch_flow,
+        load_platform_groups_at_dir, resolve_platform_groups_filename,
         validate_account_groups_payload, AntigravityRuntimeTarget, AntigravitySwitchFlow,
     };
+
+    #[test]
+    fn qoder_regional_groups_merge_both_clients_once_without_replaying_deleted_groups() {
+        for (ide, app, scope) in [
+            ("qoder", "qoder_app", "qoder_intl"),
+            ("qoder_cn_ide", "qoder_cn_app", "qoder_cn"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let ide_data = r#"[{"id":"shared","name":"IDE name","accountIds":["one"],"createdAt":10}]"#;
+            let app_data = r#"[{"id":"shared","name":"App name","accountIds":["one","two"],"extra":true},{"id":"app-only","name":"App","accountIds":["three"]}]"#;
+            let ide_path = dir.path().join(format!("{}_account_groups.json", ide));
+            let app_path = dir.path().join(format!("{}_account_groups.json", app));
+            std::fs::write(&ide_path, ide_data).unwrap();
+            std::fs::write(&app_path, app_data).unwrap();
+            let data = load_platform_groups_at_dir(dir.path(), app).unwrap();
+            let groups: serde_json::Value = serde_json::from_str(&data).unwrap();
+            assert_eq!(groups.as_array().unwrap().len(), 2);
+            assert_eq!(groups[0]["name"], "IDE name");
+            assert_eq!(groups[0]["accountIds"], serde_json::json!(["one", "two"]));
+            assert_eq!(groups[0]["createdAt"], 10);
+            assert_eq!(groups[0]["extra"], true);
+            assert_eq!(groups[1]["id"], "app-only");
+            assert_eq!(load_platform_groups_at_dir(dir.path(), ide).unwrap(), data);
+            assert_eq!(load_platform_groups_at_dir(dir.path(), scope).unwrap(), data);
+            assert_eq!(std::fs::read_to_string(&ide_path).unwrap(), ide_data);
+            assert_eq!(std::fs::read_to_string(&app_path).unwrap(), app_data);
+            std::fs::write(dir.path().join(resolve_platform_groups_filename(scope)), "[]").unwrap();
+            assert_eq!(load_platform_groups_at_dir(dir.path(), app).unwrap(), "[]");
+        }
+    }
+
+    #[test]
+    fn qoder_group_migration_preserves_invalid_sources_and_retries_without_partial_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let ide_path = dir.path().join("qoder_account_groups.json");
+        let app_path = dir.path().join("qoder_app_account_groups.json");
+        let ide = r#"[{"id":"kept","name":"Kept","accountIds":["account"]}]"#;
+        std::fs::write(&ide_path, ide).unwrap();
+        std::fs::write(&app_path, "{broken").unwrap();
+        assert!(load_platform_groups_at_dir(dir.path(), "qoder").is_err());
+        assert!(!dir.path().join("qoder_intl_account_groups.json").exists());
+        assert_eq!(std::fs::read_to_string(&ide_path).unwrap(), ide);
+        assert_eq!(std::fs::read_to_string(&app_path).unwrap(), "{broken");
+        std::fs::write(&app_path, "[]").unwrap();
+        let data = load_platform_groups_at_dir(dir.path(), "qoder_app").unwrap();
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&data).unwrap()[0]["id"], "kept");
+        assert!(!dir.path().join("qoder_cn_account_groups.json").exists());
+        assert_eq!(load_platform_groups_at_dir(dir.path(), "cursor").unwrap(), "[]");
+        assert!(!dir.path().join("cursor_account_groups.json").exists());
+    }
 
     #[test]
     fn account_groups_payload_must_be_a_json_array() {

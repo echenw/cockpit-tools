@@ -9,7 +9,7 @@ import {
   importAllAccountsFromTransferJson,
 } from './accountTransferService';
 import { ALL_PLATFORM_IDS, PlatformId } from '../types/platform';
-import { QODER_INSTANCE_VARIANT_IDS, QoderVariantId, qoderAccountSupportsVariant, isQoderVariantId } from '../types/qoder';
+import { QODER_INSTANCE_VARIANT_IDS, QoderVariantId, getQoderAccountRegion, qoderAccountSupportsVariant, isQoderVariantId } from '../types/qoder';
 import * as claudeService from './claudeService';
 import { getGroupSettings, GroupSettings, saveGroupSettings } from './groupService';
 import {
@@ -1063,6 +1063,42 @@ function importCodexWakeupState(
   };
 }
 
+/** 旧备份仍可携带两个客户端的分组；按地区合并后只提交一份快照。 */
+function regionalizeQoderGroupBackups(
+  groupsByPlatform: Record<string, ExportedAccountGroup[]>,
+): Array<[string, ExportedAccountGroup[]]> {
+  const batches = new Map<string, {
+    region: ReturnType<typeof getQoderAccountRegion>;
+    sources: Array<[string, ExportedAccountGroup[]]>;
+  }>();
+  for (const [platform, groups] of Object.entries(groupsByPlatform)) {
+    if (!Array.isArray(groups)) continue;
+    const region = getQoderAccountRegion(platform.trim().toLowerCase());
+    const key = region?.scope ?? platform;
+    const batch = batches.get(key);
+    if (batch) batch.sources.push([platform, groups]);
+    else batches.set(key, { region, sources: [[platform, groups]] });
+  }
+  return Array.from(batches, ([platform, { region, sources }]): [string, ExportedAccountGroup[]] => {
+    if (!region) return sources[0];
+    // 与本机首次合并一致：IDE 的名称/设置优先；地区快照已提供时优先沿用它。
+    const precedence: readonly string[] = [region.scope, ...region.clients];
+    sources.sort(([left], [right]) =>
+      precedence.indexOf(left.trim().toLowerCase()) - precedence.indexOf(right.trim().toLowerCase()),
+    );
+    const merged = new Map<string, ExportedAccountGroup>();
+    for (const [, groups] of sources) {
+      for (const group of groups) {
+        const saved = merged.get(group.id);
+        if (saved) saved.accountRefs.push(...(group.accountRefs ?? []));
+        else merged.set(group.id, { ...group, accountRefs: [...(group.accountRefs ?? [])] });
+      }
+    }
+    // 各端引用在后续统一解析到本机账号 ID，并按解析结果去重。
+    return [platform, Array.from(merged.values())];
+  });
+}
+
 async function exportConfigBundle(registry: AccountRegistry): Promise<DataTransferConfigBundle> {
   let codexTopLayout: CodexTopLayoutPreference;
   try {
@@ -1087,19 +1123,27 @@ async function exportConfigBundle(registry: AccountRegistry): Promise<DataTransf
     getCodexAccountGroups(),
     (async () => {
       const entries: Array<[string, ExportedAccountGroup[]]> = [];
+      const exportedQoderRegions = new Set<string>();
       for (const platform of ALL_PLATFORM_IDS) {
         if (platform === 'antigravity' || platform === 'antigravity_ide' || platform === 'codex' || platform === 'codex_api_service') {
           continue;
         }
-        const groups = await getPlatformGroups(platform);
+        const region = getQoderAccountRegion(platform);
+        if (region) {
+          if (exportedQoderRegions.has(region.scope)) continue;
+          exportedQoderRegions.add(region.scope);
+        }
+        // 便携备份继续使用已有客户端键与账号引用格式，每个地区只导出一次。
+        const groupPlatform = region?.clients[0] ?? platform;
+        const groups = await getPlatformGroups(groupPlatform);
         if (groups.length > 0) {
           entries.push([
-            platform,
+            groupPlatform,
             groups.map((g) => ({
               id: g.id,
               name: g.name,
               createdAt: g.createdAt,
-              accountRefs: mapAccountIdsToRefs(platform, g.accountIds, registry),
+              accountRefs: mapAccountIdsToRefs(groupPlatform, g.accountIds, registry),
             })),
           ]);
         }
@@ -1194,8 +1238,7 @@ async function importConfigBundle(bundle: DataTransferConfigBundle): Promise<Dat
   invalidateCodexGroupCache();
 
   if (bundle.platform_account_groups) {
-    for (const [platform, exportedGroups] of Object.entries(bundle.platform_account_groups)) {
-      if (!Array.isArray(exportedGroups)) continue;
+    for (const [platform, exportedGroups] of regionalizeQoderGroupBackups(bundle.platform_account_groups)) {
       const restored = exportedGroups.map((group) => {
         const resolved = resolveAccountRefsToIds(group.accountRefs, registry);
         unresolvedAccountRefs += resolved.unresolved;

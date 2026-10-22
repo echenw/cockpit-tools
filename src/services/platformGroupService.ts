@@ -10,7 +10,7 @@ import { parseAccountGroups, type AccountGroup } from './accountGroupService';
 import * as antigravityGroups from './accountGroupService';
 import * as codexGroups from './codexAccountGroupService';
 import { listQoderAccounts } from './qoderService';
-import { isQoderVariantId, qoderAccountSupportsVariant } from '../types/qoder';
+import { getQoderAccountRegion, qoderAccountSupportsVariant } from '../types/qoder';
 
 export type { AccountGroup };
 
@@ -21,7 +21,7 @@ export function normalizePlatform(platform: string): string {
   if (trimmed === 'gemini' || trimmed === 'antigravity_ide') return 'antigravity';
   if (trimmed === 'codex_api_service') return 'codex';
   if (trimmed === 'claude') return 'claude_manager';
-  return trimmed;
+  return getQoderAccountRegion(trimmed)?.scope ?? trimmed;
 }
 
 // ─── 内存缓存与任务串行队列 ─────────────────────────────────
@@ -74,13 +74,14 @@ async function saveToDisk(platform: string, groups: AccountGroup[]): Promise<voi
 }
 
 async function resolveQoderGroupAccountIds(platform: string, groups: AccountGroup[]): Promise<AccountGroup[]> {
-  if (!isQoderVariantId(platform) || !groups.some((group) => group.accountIds.length > 0)) return groups;
+  const region = getQoderAccountRegion(platform);
+  if (!region || !groups.some((group) => group.accountIds.length > 0)) return groups;
 
   const accounts = await listQoderAccounts();
   // 现存 ID 优先；只解析同地区的旧 ID，未知引用保留。
   const accountIds = new Map(accounts.map((account) => [account.id, account.id]));
   for (const account of accounts) {
-    if (!qoderAccountSupportsVariant(account, platform)) continue;
+    if (!qoderAccountSupportsVariant(account, region.clients[0])) continue;
     for (const legacyId of account.legacy_ids ?? []) {
       if (!accountIds.has(legacyId)) accountIds.set(legacyId, account.id);
     }
@@ -294,8 +295,15 @@ const ACTIVE_GROUP_TAB_STORAGE_PREFIX = 'agtools.group_tab_active.';
 
 export function getActiveGroupTab(platform: string): string | null {
   try {
-    const key = `${ACTIVE_GROUP_TAB_STORAGE_PREFIX}${normalizePlatform(platform)}`;
-    const saved = localStorage.getItem(key);
+    const scope = normalizePlatform(platform);
+    const key = `${ACTIVE_GROUP_TAB_STORAGE_PREFIX}${scope}`;
+    let saved = localStorage.getItem(key);
+    const region = getQoderAccountRegion(scope);
+    if (saved === null && region) {
+      saved = region.clients.map((client) => localStorage.getItem(`${ACTIVE_GROUP_TAB_STORAGE_PREFIX}${client}`))
+        .find((value) => value !== null) ?? '__all__';
+      localStorage.setItem(key, saved);
+    }
     if (!saved || saved === '__all__') return null;
     return saved;
   } catch {
@@ -305,11 +313,12 @@ export function getActiveGroupTab(platform: string): string | null {
 
 export function setActiveGroupTab(platform: string, groupId: string | null): void {
   try {
-    const key = `${ACTIVE_GROUP_TAB_STORAGE_PREFIX}${normalizePlatform(platform)}`;
-    if (!groupId) {
+    const scope = normalizePlatform(platform);
+    const key = `${ACTIVE_GROUP_TAB_STORAGE_PREFIX}${scope}`;
+    if (!groupId && !getQoderAccountRegion(scope)) {
       localStorage.removeItem(key);
     } else {
-      localStorage.setItem(key, groupId);
+      localStorage.setItem(key, groupId || '__all__');
     }
   } catch {
     // ignore localStorage errors

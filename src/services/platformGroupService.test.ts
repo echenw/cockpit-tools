@@ -57,7 +57,12 @@ function harness(
       },
     },
   };
-  const globals = { localStorage: { getItem: () => null, removeItem() {} }, console: { error() {}, log() {} } };
+  const storage = new Map<string, string>();
+  const globals = { localStorage: {
+    getItem: (key: string) => storage.get(key) ?? null,
+    setItem: (key: string, value: string) => { storage.set(key, value); },
+    removeItem: (key: string) => { storage.delete(key); },
+  }, console: { error() {}, log() {} } };
   const antigravity = loadHookModule(new URL('./accountGroupService.ts', import.meta.url), imports, globals)
     .exports as typeof import('./accountGroupService');
   const codex = loadHookModule(new URL('./codexAccountGroupService.ts', import.meta.url), imports, globals)
@@ -75,33 +80,36 @@ function harness(
     '../types/qoder': loadHookModule(new URL('../types/qoder.ts', import.meta.url), {}).exports,
   }, globals).exports as typeof import('./platformGroupService');
   return {
-    platform, antigravity, codex, disk, writes, readErrors, writeErrors, writeGates, qoder,
+    platform, antigravity, codex, disk, writes, readErrors, writeErrors, writeGates, qoder, storage,
     stored(key: string): StoredGroup[] { return JSON.parse(disk.get(key) ?? '[]'); },
   };
 }
 
-for (const variant of ['qoder', 'qoder_app', 'qoder_cn_ide', 'qoder_cn_app'] as const) {
+for (const [variant, scope] of [
+  ['qoder', 'qoder_intl'], ['qoder_app', 'qoder_intl'],
+  ['qoder_cn_ide', 'qoder_cn'], ['qoder_cn_app', 'qoder_cn'],
+] as const) {
   test(`${variant}: merged group members survive reading, editing and reloading`, async () => {
-    const h = harness({ [variant]: [group('selected', { accountIds: ['retired-id'] })] }, [
+    const h = harness({ [scope]: [group('selected', { accountIds: ['retired-id'] })] }, [
       qoderAccount('current-id', variant.startsWith('qoder_cn_') ? 'qoder_cn_app' : 'qoder_app', ['retired-id']),
     ]);
     const groups = await h.platform.getPlatformGroups(variant);
     assert.deepEqual(Array.from(groups[0].accountIds), ['current-id']);
-    assert.deepEqual(h.stored(variant)[0].accountIds, ['retired-id']);
+    assert.deepEqual(h.stored(scope)[0].accountIds, ['retired-id']);
     assert.equal(h.writes.length, 0);
 
     // 编辑弹窗按当前账号 ID 选中成员，再全量替换保存；读取结果必须保留该成员。
     const currentIds = new Set(h.qoder.accounts.map((account) => account.id));
     const selected = Array.from(groups[0].accountIds).filter((id) => currentIds.has(id));
     await h.platform.setPlatformGroupAccounts(variant, 'selected', selected);
-    assert.deepEqual(h.stored(variant)[0].accountIds, ['current-id']);
+    assert.deepEqual(h.stored(scope)[0].accountIds, ['current-id']);
     h.platform.invalidatePlatformGroupCache(variant);
     assert.deepEqual(Array.from((await h.platform.getPlatformGroups(variant))[0].accountIds), ['current-id']);
   });
 }
 
 test('Qoder group writes preserve unknown IDs, current ID priority and region boundaries', async () => {
-  const h = harness({ qoder: [group('selected', {
+  const h = harness({ qoder_intl: [group('selected', {
     accountIds: ['retired-id', 'current-id', 'live-id', 'cn-retired', 'unknown-id'],
   })] }, [
     qoderAccount('current-id', 'qoder_app', ['retired-id', 'live-id']),
@@ -111,11 +119,11 @@ test('Qoder group writes preserve unknown IDs, current ID priority and region bo
   const groups = await h.platform.getPlatformGroups('qoder');
   assert.deepEqual(Array.from(groups[0].accountIds), ['current-id', 'live-id', 'cn-retired', 'unknown-id']);
   await h.platform.setPlatformGroupAccounts('qoder', 'selected', ['retired-id', 'current-id', 'unknown-id']);
-  assert.deepEqual(h.stored('qoder')[0].accountIds, ['current-id', 'unknown-id']);
+  assert.deepEqual(h.stored('qoder_intl')[0].accountIds, ['current-id', 'unknown-id']);
 });
 
 test('cached Qoder groups resolve a later account merge from the current account list', async () => {
-  const h = harness({ qoder: [group('selected', { accountIds: ['old-current'] })] }, [
+  const h = harness({ qoder_intl: [group('selected', { accountIds: ['old-current'] })] }, [
     qoderAccount('old-current', 'qoder'),
   ]);
   assert.deepEqual(Array.from((await h.platform.getPlatformGroups('qoder'))[0].accountIds), ['old-current']);
@@ -125,16 +133,36 @@ test('cached Qoder groups resolve a later account merge from the current account
 
 test('Qoder account read failure cannot overwrite group membership or affect other platforms', async () => {
   const h = harness({
-    qoder: [group('selected', { accountIds: ['retired-id'] })],
+    qoder_intl: [group('selected', { accountIds: ['retired-id'] })],
     cursor: [group('selected')],
   }, [qoderAccount('current-id', 'qoder', ['retired-id'])]);
   await h.platform.getPlatformGroups('qoder');
   h.qoder.error = new Error('account list failed');
   await assert.rejects(h.platform.setPlatformGroupAccounts('qoder', 'selected', ['current-id']), /account list failed/);
-  assert.deepEqual(h.stored('qoder')[0].accountIds, ['retired-id']);
+  assert.deepEqual(h.stored('qoder_intl')[0].accountIds, ['retired-id']);
   assert.equal(h.writes.length, 0);
   await h.platform.renamePlatformGroup('cursor', 'selected', 'Cursor renamed');
   assert.equal(h.stored('cursor')[0].name, 'Cursor renamed');
+});
+
+test('Qoder client routes share regional group edits, active tabs and invalidation', async () => {
+  const h = harness({
+    qoder_intl: [group('intl')], qoder_cn: [group('cn')],
+  });
+  h.storage.set('agtools.group_tab_active.qoder', 'intl');
+  assert.equal(h.platform.getActiveGroupTab('qoder_app'), 'intl');
+  await h.platform.getPlatformGroups('qoder');
+  await h.platform.renamePlatformGroup('qoder_app', 'intl', 'Shared regional group');
+  await h.platform.getPlatformGroups('qoder_cn_app');
+  h.platform.invalidatePlatformGroupCache('qoder_app');
+  assert.equal((await h.platform.getPlatformGroups('qoder'))[0].name, 'Shared regional group');
+  assert.equal(h.platform.getActiveGroupTab('qoder'), 'intl');
+  assert.equal((await h.platform.getPlatformGroups('qoder_cn_ide'))[0].name, 'cn');
+  assert.equal(h.platform.getActiveGroupTab('qoder_cn_app'), null);
+  h.platform.setActiveGroupTab('qoder_app', null);
+  assert.equal(h.platform.getActiveGroupTab('qoder'), null, 'All must not restore a legacy selection');
+  assert.equal(h.storage.get('agtools.group_tab_active.qoder'), 'intl', 'legacy preferences remain intact');
+  assert.deepEqual(h.writes.map((write) => write.platform), ['qoder_intl']);
 });
 
 test('common Codex edits retain quota policies and persist sort order for both entry points', async () => {
