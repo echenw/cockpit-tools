@@ -174,7 +174,8 @@ Gerencie instâncias do CodeBuddy CN com perfis isolados e controles de ciclo de
 - **Importação de Contas**: suporta importação local e importação JSON
 - **Visualização de Cotas**: mostra o uso de créditos, créditos restantes e valores brutos do plano
 - **Operações em Lote**: suporta tags, filtros, exportação e exclusão/atualização em lote
-- **Injeção de Troca de Conta**: suporta a injeção e inicialização do Qoder após a troca de conta
+- **Injeção de Troca de Conta**: suporta a injeção e inicialização do Qoder após a troca de conta. A preparação do IDE recusa uma conta ainda gerida pelo App em execução, mesmo com AT do IDE válido, e orienta sair do App e importar suas credenciais locais finais.
+- **Atualização e sessão App**: pedidos do IDE também verificam o App da mesma região. Enquanto ele gerencia a conta, somente cotas e plano são consultados; RT e credenciais de job não são renovados, e não há escrita automática no App ou IDE CN. A verificação não exige que o executável App esteja instalado e não trata falhas de leitura como saída confirmada. O ID confirmado no App tem prioridade sobre a conta atual lembrada; outro usuário confirmado não impede a troca da conta anterior para o IDE. Identidade ausente ou ilegível mantém as proteções existentes. As operações do IDE aguardam o bloqueio de sessão do App antes do bloqueio da conta. Os novos testes de regressão foram escritos e revisados estaticamente, sem execução.
 
 #### 9.1 Qoder Multi-Instância
 

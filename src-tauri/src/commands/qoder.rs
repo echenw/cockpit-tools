@@ -12,8 +12,7 @@ fn resolve_variant_key(raw: Option<&str>) -> Result<String, String> {
 /// 每个地区共用 App 授权；旧 IDE 入口也进入同一会话，切号目标不影响授权。
 fn resolve_oauth_variant_key(raw: Option<&str>) -> Result<String, String> {
     let kind = QoderVariantKind::parse(raw)?;
-    let app_kind = if kind.is_cn() { QoderVariantKind::QoderCnApp } else { QoderVariantKind::QoderApp };
-    Ok(app_kind.provider_key().to_string())
+    Ok(kind.app_variant().provider_key().to_string())
 }
 
 fn account_belongs_to_variant(account: &QoderAccount, variant_key: &str) -> bool {
@@ -93,12 +92,16 @@ async fn run_refresh_write_back(refreshed: Vec<(QoderVariantKind, String)>) {
         let write_back = async {
             let session_lock = qoder_oauth::client_session_lock(kind)?;
             let _session_guard = session_lock.lock().await;
+            let _app_guard = qoder_oauth::client_session_lock(kind.app_variant())?.lock_owned().await;
             let account_lock = qoder_oauth::account_refresh_lock(&account_id)?;
             let _account_guard = account_lock.lock().await;
             // Resolve inside the session lock: a completed switch invalidates this target.
             let accounts = qoder_account::list_accounts_checked()?;
             if let Some(account) = accounts.iter().find(|account| account.id == account_id) {
-                if qoder_account::native_ide_owns_refresh(account)? { return Ok::<(), String>(()); }
+                if qoder_account::native_ide_owns_refresh(account)?
+                    || qoder_account::app_owned_session(&account.id)?.is_some() {
+                    return Ok::<(), String>(());
+                }
             }
             let targets = select_refresh_write_back_targets(vec![(kind, account_id.clone())], |kind| {
                 qoder_account::resolve_current_account_id_for_variant(&accounts, kind)

@@ -86,6 +86,10 @@ impl QoderVariantKind {
         self.channel() == QoderChannel::App
     }
 
+    pub fn app_variant(self) -> Self {
+        if self.is_cn() { Self::QoderCnApp } else { Self::QoderApp }
+    }
+
     /// 实例管理（应用多开）仅服务 IDE 系变体：App 系客户端受官方单实例机制限制，
     /// 无法同时运行多个登录态（`--user-data-dir` 与 e2e 旁路均被客户端显式封禁）。
     pub fn supports_instances(self) -> bool {
