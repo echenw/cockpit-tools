@@ -19,14 +19,14 @@
   transition: background-color 0.15s ease, border-color 0.15s ease;
 }
 
-.qoder-client-option:hover:not(:disabled),
-.qoder-client-option.is-selected {
-  border-color: color-mix(in srgb, var(--success) 75%, var(--text-primary));
-  background: color-mix(in srgb, var(--success) 10%, var(--bg-secondary));
+.qoder-client-option:hover:not(:disabled):not(.is-highlighted) {
+  border-color: color-mix(in srgb, var(--success) 40%, var(--border));
+  background: color-mix(in srgb, var(--success) 5%, var(--bg-secondary));
 }
 
-.qoder-client-option.is-selected {
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--success) 75%, var(--text-primary));
+.qoder-client-option.is-highlighted {
+  border-color: color-mix(in srgb, var(--success) 75%, var(--text-primary));
+  background: color-mix(in srgb, var(--success) 10%, var(--bg-secondary));
 }
 
 .qoder-client-option:focus-visible {

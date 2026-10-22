@@ -16,7 +16,6 @@ import {
   LayoutGrid,
   List,
   Gift,
-  Play,
   Plus,
   RefreshCw,
   RotateCw,
@@ -33,6 +32,7 @@ import { useTranslation } from 'react-i18next';
 import { TagEditModal } from '../components/TagEditModal';
 import { QoderBatchClaimModal } from '../components/QoderBatchClaimModal';
 import { QoderClientSelector } from '../components/QoderClientSelector';
+import { QoderIcon } from '../components/icons/QoderIcon';
 import '../components/QoderBatchClaimModal.css';
 import { useActionBubble } from '../components/ActionBubble';
 import { ExportJsonModal } from '../components/ExportJsonModal';
@@ -1973,6 +1973,7 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
               </span>
               <QoderClientSelector
                 value={switchTarget}
+                currentVariants={clientVariants.filter((variant) => currentIds[variant] === account.id)}
                 onChange={(target) => selectClientTarget(account.id, target)}
                 label={t('qoder.suite.switchTarget', '换号目标')}
                 disabled={isInjecting || deleting}
@@ -2005,7 +2006,9 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
                   aria-label={switchTitle}
                   disabled={isInjecting || deleting}
                 >
-                  {isInjecting ? <RotateCw size={14} className="loading-spinner" /> : <Play size={14} />}
+                  {isInjecting
+                    ? <RotateCw size={14} className="loading-spinner" />
+                    : <QoderIcon variant={switchTarget} className="qoder-client-icon" />}
                 </button>
                 <button
                   id={`qoder-btn-reward-${account.id}`}
@@ -2073,7 +2076,9 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
       }),
     [
       claimingRewardIds,
+      clientVariants,
       currentAccountIds,
+      currentIds,
       deleting,
       exportModal.preparing,
       exportModal.saving,
@@ -2158,6 +2163,7 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
                 </div>
                 <QoderClientSelector
                   value={switchTarget}
+                  currentVariants={clientVariants.filter((variant) => currentIds[variant] === account.id)}
                   onChange={(target) => selectClientTarget(account.id, target)}
                   label={t('qoder.suite.switchTarget', '换号目标')}
                   disabled={isInjecting || deleting}
@@ -2233,7 +2239,9 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
                   aria-label={switchTitle}
                   disabled={isInjecting || deleting}
                 >
-                  {isInjecting ? <RotateCw size={14} className="loading-spinner" /> : <Play size={14} />}
+                  {isInjecting
+                    ? <RotateCw size={14} className="loading-spinner" />
+                    : <QoderIcon variant={switchTarget} className="qoder-client-icon" />}
                 </button>
                 <button
                   id={`qoder-list-btn-reward-${account.id}`}
@@ -2292,7 +2300,9 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
       }),
     [
       claimingRewardIds,
+      clientVariants,
       currentAccountIds,
+      currentIds,
       deleting,
       exportModal.preparing,
       exportModal.saving,
