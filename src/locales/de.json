@@ -6809,6 +6809,9 @@
     },
     "title": "Qoder-Kontenverwaltung",
     "suite": {
+      "client": "Client",
+      "switchTarget": "Zielclient",
+      "switchToClient": "Zu {{client}} wechseln",
       "sharedAccounts": "App und IDE teilen Konten innerhalb einer Region. Einmal autorisieren oder importieren, um beide zu nutzen.",
       "deleteSharedSingle": "Dieses gemeinsame Konto aus den App- und IDE-Listen dieser Region löschen?",
       "deleteSharedMulti": "{{count}} gemeinsame Konten aus den App- und IDE-Listen dieser Region löschen?",
@@ -6822,11 +6825,10 @@
     "instances": {
       "unsupported": {
         "descPlatform": "Mehrere Qoder-Instanzen werden nur unter macOS, Windows und Linux unterstützt."
-      },
-      "appMultiInstanceUnsupported": "Der {{variant}}-Client unterstützt keine Mehrfachinstanzen: Die offizielle Einzelinstanz-Beschränkung verhindert mehrere gleichzeitige Sitzungen. Verwenden Sie stattdessen den Kontowechsel."
+      }
     },
     "oauth": {
-      "hint": "Bitte schließen Sie die Anmeldung auf der geöffneten Browserseite ab: Wenn sich die Anmeldeseite nicht automatisch geöffnet hat, klicken Sie auf „Anmeldelink kopieren“, kopieren Sie den Link und fügen Sie ihn in Ihren Browser ein, um die Anmeldung abzuschließen.",
+      "hint": "Klicken Sie auf die Schaltfläche unten, um Qoder im Browser über die regionale App zu autorisieren. Qoder muss dabei nicht laufen.",
       "copyLoginUrl": "Anmeldelink kopieren",
       "accountNotVisible": "Das autorisierte Konto ist nicht in der gespeicherten Kontoliste erschienen"
     },
@@ -6841,9 +6843,9 @@
     },
     "flowNotice": {
       "title": "Qoder-Kontoleitfaden (zum Auf- und Zuklappen klicken)",
-      "desc": "Unterstutzt offizielle OAuth-Anmeldung (mit Callback), lokalen Import, JSON-Import, Kontowechsel-Injektion, Multi-Instance-Bindung und Kontingentuebersicht. Der Login-Ablauf folgt den tatsaechlichen On-Disk-Daten des Qoder-Clients.",
+      "desc": "Unterstützt OAuth über die regionale App, lokalen Import, JSON-Import, das Schreiben der Anmeldedaten beim Kontowechsel, die Zuordnung mehrerer Instanzen und eine Kontingentübersicht. Für die Browserautorisierung muss Qoder nicht laufen; die Anmeldedaten werden im Dateiformat des Qoder-Clients geschrieben.",
       "permission": "Berechtigungsumfang: liest den lokalen Qoder-Auth-Speicher (Auth-Anmeldedaten und Benutzerinformationen) fuer Kontowechsel und Sitzungsinjektion; alle Daten werden ausschliesslich lokal auf Ihrem Geraet verarbeitet.",
-      "network": "Netzwerkumfang: OAuth-Anmeldung benoetigt eine Verbindung zu offiziellen Qoder-Diensten fuer den Callback-Ablauf; Kontingentabfragen verwenden die Qoder API. Lokale Schluessel oder Zugangsdaten werden nicht hochgeladen."
+      "network": "Netzwerkumfang: OAuth öffnet die offizielle Autorisierungsseite der regionalen Qoder App im Browser und fragt das Ergebnis der Geräteautorisierung regelmäßig über die offizielle Qoder OpenAPI ab. Kontingentabfragen rufen Nutzungsdaten über Qoder APIs ab."
     },
     "addModal": {
       "title": "Qoder-Konto hinzufügen"

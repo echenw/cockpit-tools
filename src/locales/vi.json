@@ -6809,6 +6809,9 @@
     },
     "title": "Quản lý tài khoản Qoder",
     "suite": {
+      "client": "Ứng dụng",
+      "switchTarget": "Ứng dụng đích",
+      "switchToClient": "Chuyển sang {{client}}",
       "sharedAccounts": "App và IDE dùng chung tài khoản trong cùng khu vực. Chỉ cần cấp quyền hoặc nhập một lần.",
       "deleteSharedSingle": "Xóa tài khoản dùng chung này khỏi cả danh sách App và IDE trong khu vực này?",
       "deleteSharedMulti": "Xóa {{count}} tài khoản dùng chung khỏi cả danh sách App và IDE trong khu vực này?",
@@ -6822,11 +6825,10 @@
     "instances": {
       "unsupported": {
         "descPlatform": "Đa phiên bản Qoder chỉ được hỗ trợ trên macOS, Windows và Linux."
-      },
-      "appMultiInstanceUnsupported": "Ứng dụng {{variant}} không hỗ trợ chạy nhiều phiên bản: cơ chế một phiên bản chính thức ngăn chạy đồng thời nhiều phiên đăng nhập. Hãy dùng tính năng chuyển tài khoản."
+      }
     },
     "oauth": {
-      "hint": "Hãy hoàn tất đăng nhập trên trang trình duyệt đã mở: nếu trang đăng nhập không tự động mở, hãy nhấp vào \"Sao chép liên kết đăng nhập\", sao chép liên kết rồi dán vào trình duyệt để hoàn tất đăng nhập.",
+      "hint": "Nhấp vào nút bên dưới để ủy quyền Qoder trong trình duyệt qua App của khu vực. Không cần giữ Qoder chạy.",
       "copyLoginUrl": "Sao chép liên kết đăng nhập",
       "accountNotVisible": "Tài khoản đã cấp quyền không xuất hiện trong danh sách tài khoản đã lưu"
     },
@@ -6841,9 +6843,9 @@
     },
     "flowNotice": {
       "title": "Huong dan tai khoan Qoder (nhan de mo rong/thu gon)",
-      "desc": "Ho tro dang nhap OAuth chinh thuc (callback), nhap cuc bo, nhap JSON, tiem chuyen tai khoan, gan nhieu instance va tong quan han muc. Luong dang nhap su dung dung du lieu luu tru thuc te cua Qoder client.",
+      "desc": "Hỗ trợ OAuth qua App của khu vực, nhập cục bộ, nhập JSON, ghi thông tin đăng nhập khi chuyển tài khoản, liên kết nhiều phiên bản và tổng quan hạn mức. Việc ủy quyền trong trình duyệt không yêu cầu Qoder tiếp tục chạy; dữ liệu được ghi theo định dạng lưu trữ của ứng dụng Qoder.",
       "permission": "Pham vi quyen: doc kho xac thuc cuc bo cua Qoder (thong tin auth va thong tin nguoi dung) de phuc vu chuyen tai khoan va tiem phien; moi du lieu deu duoc xu ly cuc bo tren may cua ban.",
-      "network": "Pham vi mang: dang nhap OAuth can truy cap dich vu chinh thuc cua Qoder de hoan tat callback; truy van han muc su dung Qoder API. Khong tai len khoa hay thong tin xac thuc cuc bo."
+      "network": "Phạm vi mạng: OAuth mở trang ủy quyền chính thức của Qoder App cho khu vực trong trình duyệt và thăm dò OpenAPI chính thức của Qoder để lấy kết quả ủy quyền thiết bị. Truy vấn hạn mức gọi API Qoder để lấy dữ liệu sử dụng."
     },
     "addModal": {
       "title": "Thêm tài khoản Qoder"

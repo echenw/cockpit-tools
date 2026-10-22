@@ -6809,6 +6809,9 @@
     },
     "title": "Správa účtů Qoder",
     "suite": {
+      "client": "Klient",
+      "switchTarget": "Cílový klient",
+      "switchToClient": "Přepnout na {{client}}",
       "sharedAccounts": "App a IDE sdílejí účty v rámci regionu. Stačí jedna autorizace nebo import.",
       "deleteSharedSingle": "Smazat tento sdílený účet ze seznamů App i IDE v tomto regionu?",
       "deleteSharedMulti": "Smazat {{count}} sdílených účtů ze seznamů App i IDE v tomto regionu?",
@@ -6822,11 +6825,10 @@
     "instances": {
       "unsupported": {
         "descPlatform": "Více instancí Qoder je podporováno pouze na macOS, Windows a Linuxu."
-      },
-      "appMultiInstanceUnsupported": "Klient {{variant}} nepodporuje více instancí: oficiální mechanismus jedné instance znemožňuje spuštění více relací současně. Použijte přepínání účtů."
+      }
     },
     "oauth": {
-      "hint": "Dokončete přihlášení v otevřené stránce prohlížeče: pokud se přihlašovací stránka neotevřela automaticky, klikněte na „Kopírovat odkaz pro přihlášení“, zkopírujte odkaz a vložte jej do prohlížeče.",
+      "hint": "Kliknutím na tlačítko níže autorizujte Qoder v prohlížeči přes aplikaci App pro daný region. Qoder nemusí zůstat spuštěný.",
       "copyLoginUrl": "Kopírovat odkaz pro přihlášení",
       "accountNotVisible": "Autorizovaný účet se neobjevil v seznamu uložených účtů"
     },
@@ -6841,9 +6843,9 @@
     },
     "flowNotice": {
       "title": "Prirucka k uctu Qoder (kliknutim rozbalit/sbalit)",
-      "desc": "Podporuje oficialni prihlaseni pres OAuth (callback), mistni import, import JSON, injekci pro prepnuti uctu, navazani vice instanci a prehled kvot. Prihlasovaci tok vychazi ze skutecnych ulozenych dat klienta Qoder.",
+      "desc": "Podporuje OAuth přes aplikaci App pro daný region, místní import, import JSON, zápis přihlášení při přepínání účtů, propojení více instancí a přehled kvót. Autorizace v prohlížeči nevyžaduje spuštěný Qoder; zápis odpovídá formátu dat klienta Qoder na disku.",
       "permission": "Rozsah opravneni: cte mistni autentizacni uloziste Qoderu (prihlasovaci udaje auth a informace o uzivateli) pro prepinani uctu a injekci relace; vsechna data se zpracovavaji pouze lokalne na vasem zarizeni.",
-      "network": "Sitovy rozsah: prihlaseni pres OAuth vyzaduje spojeni s oficialnimi sluzbami Qoderu pro callback; dotazy na kvotu pouzivaji Qoder API. Mistni klice ani povereni se neodesilaji."
+      "network": "Síťový rozsah: OAuth otevře v prohlížeči oficiální autorizační stránku regionální aplikace Qoder App a pravidelně dotazuje oficiální OpenAPI Qoder na výsledek autorizace zařízení. Dotazy na kvótu získávají údaje o využití přes Qoder API."
     },
     "addModal": {
       "title": "Přidat účet Qoder"

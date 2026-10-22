@@ -6809,6 +6809,9 @@
     },
     "title": "Gestione account Qoder",
     "suite": {
+      "client": "Client",
+      "switchTarget": "Client di destinazione",
+      "switchToClient": "Passa a {{client}}",
       "sharedAccounts": "App e IDE condividono gli account nella stessa regione. Basta autorizzare o importare una volta.",
       "deleteSharedSingle": "Eliminare questo account condiviso dagli elenchi App e IDE di questa regione?",
       "deleteSharedMulti": "Eliminare {{count}} account condivisi dagli elenchi App e IDE di questa regione?",
@@ -6822,11 +6825,10 @@
     "instances": {
       "unsupported": {
         "descPlatform": "Le istanze multiple di Qoder sono supportate solo su macOS, Windows e Linux."
-      },
-      "appMultiInstanceUnsupported": "Il client {{variant}} non supporta istanze multiple: il meccanismo ufficiale a istanza singola impedisce l'esecuzione simultanea di più sessioni. Usa la funzione di cambio account."
+      }
     },
     "oauth": {
-      "hint": "Completa l'accesso nella pagina del browser aperta: se la pagina di accesso non si apre automaticamente, fai clic su «Copia link di accesso», copia il link e incollalo nel browser per completare l'accesso.",
+      "hint": "Fai clic sul pulsante qui sotto per autorizzare Qoder nel browser tramite l’App della regione. Qoder non deve restare aperto.",
       "copyLoginUrl": "Copia link di accesso",
       "accountNotVisible": "L'account autorizzato non compare nell'elenco degli account salvati"
     },
@@ -6841,9 +6843,9 @@
     },
     "flowNotice": {
       "title": "Guida account Qoder (clicca per espandere/ridurre)",
-      "desc": "Supporta accesso OAuth ufficiale (callback), importazione locale, importazione JSON, iniezione per cambio account, associazione multiistanza e panoramica quota. Il flusso di accesso segue i dati realmente salvati dal client Qoder.",
+      "desc": "Supporta OAuth tramite l’App della regione, importazione locale, importazione JSON, scrittura delle credenziali al cambio di account, associazione di più istanze e panoramica delle quote. L’autorizzazione nel browser non richiede che Qoder resti aperto; la scrittura segue il formato su disco del client Qoder.",
       "permission": "Ambito permessi: legge lo storage di autenticazione locale di Qoder (credenziali auth e informazioni utente) per cambio account e iniezione della sessione; tutti i dati vengono elaborati localmente sul dispositivo.",
-      "network": "Ambito rete: il login OAuth richiede accesso ai servizi ufficiali di Qoder per completare il callback; le richieste di quota usano la Qoder API. Nessuna chiave o credenziale locale viene caricata."
+      "network": "Ambito di rete: OAuth apre nel browser la pagina ufficiale di autorizzazione dell’App Qoder della regione e interroga periodicamente l’OpenAPI ufficiale di Qoder per ottenere il risultato dell’autorizzazione del dispositivo. Le query delle quote usano le API Qoder per ottenere i dati di utilizzo."
     },
     "addModal": {
       "title": "Aggiungi account Qoder"

@@ -6809,6 +6809,9 @@
     },
     "title": "Gestión de cuentas de Qoder",
     "suite": {
+      "client": "Cliente",
+      "switchTarget": "Cliente de destino",
+      "switchToClient": "Cambiar a {{client}}",
       "sharedAccounts": "App e IDE comparten cuentas dentro de cada región. Autoriza o importa una vez para usar ambos.",
       "deleteSharedSingle": "¿Eliminar esta cuenta compartida de las listas de App e IDE de esta región?",
       "deleteSharedMulti": "¿Eliminar {{count}} cuentas compartidas de las listas de App e IDE de esta región?",
@@ -6822,11 +6825,10 @@
     "instances": {
       "unsupported": {
         "descPlatform": "Las múltiples instancias de Qoder solo son compatibles con macOS, Windows y Linux."
-      },
-      "appMultiInstanceUnsupported": "El cliente {{variant}} no admite instancias múltiples: el mecanismo oficial de instancia única impide ejecutar varias sesiones a la vez. Utilice la función de cambio de cuenta."
+      }
     },
     "oauth": {
-      "hint": "Completa el inicio de sesión en la página del navegador abierta: si la página de inicio de sesión no se abrió automáticamente, haz clic en «Copiar enlace de inicio de sesión», copia el enlace y pégalo en el navegador para completar el inicio de sesión.",
+      "hint": "Haz clic en el botón de abajo para autorizar Qoder en el navegador mediante la App de la región. No es necesario mantener Qoder abierto.",
       "copyLoginUrl": "Copiar enlace de inicio de sesión",
       "accountNotVisible": "La cuenta autorizada no apareció en la lista de cuentas guardadas"
     },
@@ -6841,9 +6843,9 @@
     },
     "flowNotice": {
       "title": "Guia de cuentas de Qoder (haz clic para expandir o contraer)",
-      "desc": "Admite inicio de sesion oficial por OAuth (callback), importacion local, importacion JSON, inyeccion para cambio de cuenta, vinculacion multiinstancia y vista general de cuota. El flujo de inicio de sesion sigue los datos reales almacenados por el cliente de Qoder.",
+      "desc": "Admite OAuth mediante la App de la región, importación local, importación JSON, escritura de credenciales al cambiar de cuenta, vinculación de varias instancias y resumen de cuotas. La autorización en el navegador no requiere mantener Qoder abierto; las credenciales se escriben con el formato del cliente Qoder.",
       "permission": "Alcance de permisos: lee el almacenamiento local de autenticacion de Qoder (credenciales auth e informacion del usuario) para cambio de cuenta e inyeccion de sesion; todos los datos se procesan localmente en tu equipo.",
-      "network": "Alcance de red: el inicio de sesion OAuth requiere acceso a los servicios oficiales de Qoder para completar el callback; las consultas de cuota usan la API de Qoder. No se suben claves ni credenciales locales."
+      "network": "Alcance de red: OAuth abre en el navegador la página oficial de autorización de la App de Qoder de la región y consulta periódicamente la OpenAPI oficial de Qoder para obtener el resultado de la autorización del dispositivo. Las consultas de cuota usan las API de Qoder para obtener datos de uso."
     },
     "addModal": {
       "title": "Agregar cuenta de Qoder"

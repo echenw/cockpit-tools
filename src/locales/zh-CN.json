@@ -7029,6 +7029,9 @@
     },
     "title": "Qoder 账号管理",
     "suite": {
+      "client": "客户端",
+      "switchTarget": "换号目标",
+      "switchToClient": "切换到 {{client}}",
       "sharedAccounts": "同地区的 App 与 IDE 共用账号，授权或导入一次，两端都可使用。",
       "deleteSharedSingle": "确认删除该共享账号？将同时从同地区的 App 和 IDE 列表移除。",
       "deleteSharedMulti": "确认删除选中的 {{count}} 个共享账号？将同时从同地区的 App 和 IDE 列表移除。",
@@ -7041,12 +7044,12 @@
     },
     "flowNotice": {
       "title": "Qoder 账号接入说明（点击展开/收起）",
-      "desc": "当前支持官方 CLI device login 授权、本地导入、JSON 导入、切号注入、应用多开绑定与配额概览。浏览器授权无需保持 Qoder 运行；切号注入按 Qoder 客户端真实落盘规则写回。",
+      "desc": "当前支持本地区 App OAuth 授权、本地导入、JSON 导入、切号注入、应用多开绑定与配额概览。浏览器授权无需保持 Qoder 运行；切号注入按 Qoder 客户端真实落盘规则写回。",
       "permission": "权限范围：读取 Qoder 本地认证存储、用户信息与机器标识缓存（如 machine_token.json、cache/id），用于官方授权登录、本地导入、账号切换与会话注入；所有数据仅在本机处理。",
-      "network": "网络范围：OAuth 授权登录会在浏览器中打开 Qoder 官方 device login 页面，并轮询 Qoder 官方 OpenAPI 完成授权；配额查询通过 Qoder API 获取用量数据。不上传本地密钥、凭证或原始存储内容。"
+      "network": "网络范围：OAuth 在浏览器中打开本地区 Qoder App 的官方授权页面，并轮询 Qoder 官方 OpenAPI 获取设备授权结果；配额查询通过 Qoder API 获取用量数据。"
     },
     "oauth": {
-      "hint": "点击下方按钮，在浏览器中完成 Qoder 官方授权。该流程走官方 CLI device login 链路，无需保持 Qoder 运行。",
+      "hint": "点击下方按钮，通过本地区 App 授权链路在浏览器中完成 Qoder 授权，无需保持 Qoder 运行。",
       "copyLoginUrl": "复制登录链接",
       "accountNotVisible": "授权账号未出现在已保存的账号列表中"
     },
@@ -7062,8 +7065,7 @@
     "instances": {
       "unsupported": {
         "descPlatform": "Qoder 应用多开仅支持 macOS、Windows 和 Linux。"
-      },
-      "appMultiInstanceUnsupported": "{{variant}} 客户端不支持应用多开：官方单实例机制限制，同一客户端无法同时运行多个登录态；可使用账号切换功能更换账号。"
+      }
     },
     "addModal": {
       "title": "添加 Qoder 账号"

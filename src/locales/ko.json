@@ -6809,6 +6809,9 @@
     },
     "title": "Qoder 계정 관리",
     "suite": {
+      "client": "클라이언트",
+      "switchTarget": "전환 대상",
+      "switchToClient": "{{client}}로 전환",
       "sharedAccounts": "같은 지역의 App과 IDE는 계정을 공유합니다. 한 번 인증하거나 가져오면 양쪽에서 사용할 수 있습니다.",
       "deleteSharedSingle": "이 공유 계정을 같은 지역의 App과 IDE 목록 모두에서 삭제할까요?",
       "deleteSharedMulti": "공유 계정 {{count}}개를 같은 지역의 App과 IDE 목록 모두에서 삭제할까요?",
@@ -6822,11 +6825,10 @@
     "instances": {
       "unsupported": {
         "descPlatform": "Qoder 다중 인스턴스는 macOS, Windows, Linux에서만 지원됩니다."
-      },
-      "appMultiInstanceUnsupported": "{{variant}} 클라이언트는 다중 실행(멀티 인스턴스)을 지원하지 않습니다. 공식 단일 인스턴스 제한으로 동일 클라이언트에서 여러 로그인 세션을 동시에 실행할 수 없습니다. 계정 전환 기능을 사용하세요."
+      }
     },
     "oauth": {
-      "hint": "열린 브라우저 페이지에서 로그인을 완료하세요. 로그인 페이지가 자동으로 열리지 않으면 \"로그인 링크 복사\"를 클릭해 링크를 복사한 뒤 브라우저에 붙여 넣어 로그인을 완료하세요.",
+      "hint": "아래 버튼을 눌러 해당 지역 App의 인증 흐름으로 브라우저에서 Qoder 인증을 완료하세요. Qoder를 실행해 둘 필요는 없습니다.",
       "copyLoginUrl": "로그인 링크 복사",
       "accountNotVisible": "인증된 계정이 저장된 계정 목록에 나타나지 않았습니다"
     },
@@ -6841,9 +6843,9 @@
     },
     "flowNotice": {
       "title": "Qoder 계정 안내 (클릭하여 펼치기/접기)",
-      "desc": "공식 OAuth 로그인(콜백), 로컬 가져오기, JSON 가져오기, 계정 전환 주입, 멀티 인스턴스 바인딩 및 할당량 개요를 지원합니다. 로그인 흐름은 Qoder 클라이언트의 실제 저장 데이터 형식을 따릅니다.",
+      "desc": "해당 지역 App을 통한 OAuth 인증, 로컬 가져오기, JSON 가져오기, 계정 전환 시 인증 정보 주입, 멀티 인스턴스 연결 및 할당량 개요를 지원합니다. 브라우저 인증 중에는 Qoder를 실행해 둘 필요가 없으며, 인증 정보는 Qoder 클라이언트의 저장 형식에 맞춰 기록됩니다.",
       "permission": "권한 범위: 계정 전환과 세션 주입을 위해 Qoder 로컬 인증 저장소(auth 자격 증명 및 사용자 정보)를 읽습니다. 모든 데이터는 사용자 기기에서만 처리됩니다.",
-      "network": "네트워크 범위: OAuth 로그인은 콜백 처리를 위해 Qoder 공식 서비스 연결이 필요하며, 할당량 조회는 Qoder API 를 사용합니다. 로컬 키나 자격 증명은 업로드되지 않습니다."
+      "network": "네트워크 범위: OAuth는 브라우저에서 해당 지역 Qoder App의 공식 인증 페이지를 열고 Qoder 공식 OpenAPI를 주기적으로 조회해 기기 인증 결과를 받습니다. 할당량 조회는 Qoder API로 사용량 데이터를 가져옵니다."
     },
     "addModal": {
       "title": "Qoder 계정 추가"

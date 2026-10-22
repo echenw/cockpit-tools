@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { QoderAccount, QoderVariantId } from '../types/qoder';
+import type { QoderAccount, QoderAppVariantId, QoderVariantId } from '../types/qoder';
 
 export const DEFAULT_QODER_VARIANT: QoderVariantId = 'qoder';
 
@@ -66,16 +66,16 @@ export async function importQoderFromLocal(variantKey?: QoderVariantId): Promise
 }
 
 
-export async function qoderOauthLoginStart(variantKey?: QoderVariantId): Promise<QoderOAuthStartResponse> {
+export async function qoderOauthLoginStart(variantKey: QoderAppVariantId = 'qoder_app'): Promise<QoderOAuthStartResponse> {
   const raw = await invoke<QoderOAuthStartResponseRaw>('qoder_oauth_login_start', {
-    variantKey: resolveVariantKey(variantKey),
+    variantKey,
   });
   return normalizeQoderOAuthStartResponse(raw);
 }
 
-export async function qoderOauthLoginPeek(variantKey?: QoderVariantId): Promise<QoderOAuthStartResponse | null> {
+export async function qoderOauthLoginPeek(variantKey: QoderAppVariantId = 'qoder_app'): Promise<QoderOAuthStartResponse | null> {
   const raw = await invoke<QoderOAuthStartResponseRaw | null>('qoder_oauth_login_peek', {
-    variantKey: resolveVariantKey(variantKey),
+    variantKey,
   });
   if (!raw) return null;
   try {
@@ -85,14 +85,14 @@ export async function qoderOauthLoginPeek(variantKey?: QoderVariantId): Promise<
   }
 }
 
-export async function qoderOauthLoginComplete(loginId: string, variantKey?: QoderVariantId): Promise<QoderAccount> {
-  return await invoke('qoder_oauth_login_complete', { loginId, variantKey: resolveVariantKey(variantKey) });
+export async function qoderOauthLoginComplete(loginId: string, variantKey: QoderAppVariantId = 'qoder_app'): Promise<QoderAccount> {
+  return await invoke('qoder_oauth_login_complete', { loginId, variantKey });
 }
 
-export async function qoderOauthLoginCancel(loginId?: string, variantKey?: QoderVariantId): Promise<void> {
+export async function qoderOauthLoginCancel(loginId?: string, variantKey: QoderAppVariantId = 'qoder_app'): Promise<void> {
   return await invoke('qoder_oauth_login_cancel', {
     loginId: loginId ?? null,
-    variantKey: resolveVariantKey(variantKey),
+    variantKey,
   });
 }
 

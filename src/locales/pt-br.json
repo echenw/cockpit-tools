@@ -6809,6 +6809,9 @@
     },
     "title": "Gerenciamento de contas do Qoder",
     "suite": {
+      "client": "Cliente",
+      "switchTarget": "Cliente de destino",
+      "switchToClient": "Alternar para {{client}}",
       "sharedAccounts": "App e IDE compartilham contas em cada região. Autorize ou importe uma vez para usar ambos.",
       "deleteSharedSingle": "Excluir esta conta compartilhada das listas de App e IDE desta região?",
       "deleteSharedMulti": "Excluir {{count}} contas compartilhadas das listas de App e IDE desta região?",
@@ -6822,11 +6825,10 @@
     "instances": {
       "unsupported": {
         "descPlatform": "Múltiplas instâncias do Qoder são compatíveis apenas com macOS, Windows e Linux."
-      },
-      "appMultiInstanceUnsupported": "O cliente {{variant}} não oferece suporte a várias instâncias: o mecanismo oficial de instância única impede a execução simultânea de várias sessões. Use a troca de conta."
+      }
     },
     "oauth": {
-      "hint": "Conclua o login na página do navegador que foi aberta: se a página de login não abrir automaticamente, clique em \"Copiar link de login\", copie o link e cole-o no navegador para concluir o login.",
+      "hint": "Clique no botão abaixo para autorizar o Qoder no navegador pelo App da região. Não é necessário manter o Qoder aberto.",
       "copyLoginUrl": "Copiar link de login",
       "accountNotVisible": "A conta autorizada não apareceu na lista de contas salvas"
     },
@@ -6841,9 +6843,9 @@
     },
     "flowNotice": {
       "title": "Guia de contas Qoder (clique para expandir/recolher)",
-      "desc": "Suporta login oficial via OAuth (callback), importacao local, importacao JSON, injecao para troca de conta, vinculacao multi-instancia e visao geral de cota. O fluxo de login segue os dados reais gravados pelo cliente Qoder.",
+      "desc": "Suporta OAuth pelo App da região, importação local, importação JSON, gravação de credenciais na troca de conta, vinculação de múltiplas instâncias e visão geral de cotas. A autorização no navegador não exige que o Qoder permaneça aberto; a gravação segue o formato de armazenamento do cliente Qoder.",
       "permission": "Escopo de permissao: le o armazenamento local de autenticacao do Qoder (credenciais auth e informacoes do usuario) para troca de conta e injecao de sessao; todos os dados sao processados localmente no seu dispositivo.",
-      "network": "Escopo de rede: o login OAuth requer acesso aos servicos oficiais do Qoder para concluir o callback; as consultas de cota usam a API do Qoder. Nenhuma chave ou credencial local e enviada."
+      "network": "Escopo de rede: o OAuth abre no navegador a página oficial de autorização do App Qoder da região e consulta periodicamente a OpenAPI oficial do Qoder para obter o resultado da autorização do dispositivo. As consultas de cota usam as APIs do Qoder para obter dados de uso."
     },
     "addModal": {
       "title": "Adicionar conta Qoder"

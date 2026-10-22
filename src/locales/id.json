@@ -6856,6 +6856,9 @@
     },
     "title": "Akun Qoder",
     "suite": {
+      "client": "Klien",
+      "switchTarget": "Klien tujuan",
+      "switchToClient": "Beralih ke {{client}}",
       "sharedAccounts": "App dan IDE berbagi akun dalam satu wilayah. Cukup otorisasi atau impor sekali untuk menggunakan keduanya.",
       "deleteSharedSingle": "Hapus akun bersama ini dari daftar App dan IDE di wilayah ini?",
       "deleteSharedMulti": "Hapus {{count}} akun bersama dari daftar App dan IDE di wilayah ini?",
@@ -6868,12 +6871,12 @@
     },
     "flowNotice": {
       "title": "Panduan akun Qoder (klik untuk perluas/ciutkan)",
-      "desc": "Mendukung otorisasi login perangkat CLI resmi, impor lokal, impor JSON, injeksi penggantian akun, ikatan multi-instansi, dan ringkasan kuota. Otorisasi peramban tidak memerlukan Qoder tetap berjalan; injeksi menulis kembali menggunakan aturan on-disk klien Qoder yang sebenarnya.",
+      "desc": "Mendukung OAuth melalui alur App sesuai wilayah, impor lokal, impor JSON, injeksi penggantian akun, pengaitan multi-instansi, dan ringkasan kuota. Otorisasi di peramban tidak memerlukan Qoder tetap berjalan; injeksi mengikuti format penyimpanan klien Qoder.",
       "permission": "Cakupan izin: membaca penyimpanan auth lokal Qoder, info pengguna, dan cache identitas mesin seperti machine_token.json dan cache/id untuk otorisasi resmi, impor lokal, penggantian akun, dan injeksi sesi. Semua data diproses secara lokal di mesin Anda.",
-      "network": "Cakupan jaringan: Otorisasi OAuth membuka halaman login perangkat resmi Qoder di peramban Anda dan melakukan polling OpenAPI resmi Qoder untuk menyelesaikan otorisasi. Kueri kuota memanggil API Qoder untuk data penggunaan. Tidak ada kunci lokal, kredensial, atau konten penyimpanan mentah yang diunggah."
+      "network": "Cakupan jaringan: OAuth membuka halaman otorisasi resmi App Qoder sesuai wilayah di peramban dan melakukan polling OpenAPI resmi Qoder untuk memperoleh hasil otorisasi perangkat. Kueri kuota memanggil API Qoder untuk data penggunaan."
     },
     "oauth": {
-      "hint": "Klik tombol di bawah ini untuk menyelesaikan otorisasi Qoder di peramban Anda. Ini menggunakan alur login perangkat CLI resmi dan tidak memerlukan Qoder tetap berjalan.",
+      "hint": "Klik tombol di bawah untuk mengotorisasi Qoder di peramban melalui alur App sesuai wilayah. Qoder tidak perlu tetap berjalan.",
       "copyLoginUrl": "Salin URL Masuk",
       "accountNotVisible": "Akun yang diotorisasi tidak muncul dalam daftar akun tersimpan"
     },
@@ -6889,8 +6892,7 @@
     "instances": {
       "unsupported": {
         "descPlatform": "Multi-instansi Qoder hanya tersedia di macOS, Windows, dan Linux."
-      },
-      "appMultiInstanceUnsupported": "Klien {{variant}} tidak mendukung multi-instans: mekanisme satu instans resmi mencegah beberapa sesi berjalan bersamaan. Gunakan fitur ganti akun."
+      }
     },
     "addModal": {
       "title": "Tambah Akun Qoder"

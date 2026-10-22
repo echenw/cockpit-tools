@@ -463,10 +463,13 @@ export function hasQoderQuotaData(account: QoderAccount): boolean {
 // 显示名为固定品牌字面量，须逐字渲染、不做意译；经 `qoder.suite.variants.*`
 // 本地化（品牌字面量，各语言一致）。
 //
-// variant 记录凭据来源；账号身份按地区共享，四个客户端入口保持独立。
+// variant 记录凭据来源；账号身份按地区共享，客户端凭据与切号目标保持独立。
 // ---------------------------------------------------------------------------
 
 export type QoderVariantId = 'qoder' | 'qoder_app' | 'qoder_cn_ide' | 'qoder_cn_app';
+
+/** 新增 OAuth 授权只使用本地区 App。 */
+export type QoderAppVariantId = Extract<QoderVariantId, 'qoder_app' | 'qoder_cn_app'>;
 
 export const QODER_VARIANT_IDS: readonly QoderVariantId[] = [
   'qoder',
@@ -495,6 +498,34 @@ export const QODER_VARIANT_DISPLAY_NAMES: Record<QoderVariantId, string> = {
   qoder_cn_app: 'Qoder CN',
 };
 
+const QODER_ACCOUNT_REGIONS = {
+  intl: { scope: 'qoder_intl', clients: ['qoder', 'qoder_app'] },
+  cn: { scope: 'qoder_cn', clients: ['qoder_cn_ide', 'qoder_cn_app'] },
+} as const;
+
+/** 分组与筛选属于地区账号页；客户端键仍供换号、刷新和导入使用。 */
+export function getQoderAccountRegion(key: string) {
+  switch (key) {
+    case 'qoder':
+    case 'qoder_app':
+    case 'qoder_intl':
+      return QODER_ACCOUNT_REGIONS.intl;
+    case 'qoder_cn_ide':
+    case 'qoder_cn_app':
+    case 'qoder_cn':
+      return QODER_ACCOUNT_REGIONS.cn;
+    default:
+      return null;
+  }
+}
+
+/** 地区账号页中的两个客户端，IDE 在前，App 在后。 */
+export function getQoderClientVariants(variant: QoderVariantId): readonly [QoderInstanceVariantId, QoderAppVariantId] {
+  return variant === 'qoder_cn_ide' || variant === 'qoder_cn_app'
+    ? QODER_ACCOUNT_REGIONS.cn.clients
+    : QODER_ACCOUNT_REGIONS.intl.clients;
+}
+
 export function normalizeQoderVariantId(raw: unknown): QoderVariantId | null {
   const value = toNonEmptyString(raw);
   if (!value) return null;
@@ -520,7 +551,7 @@ export function getQoderAccountVariantId(account: QoderAccount): QoderVariantId 
   return normalizeQoderVariantId(account.variant) ?? 'qoder';
 }
 
-/** Client navigation stays four-way; account membership is regional. */
+/** 客户端操作仍指定变体；账号列表按地区归属。 */
 export function qoderAccountSupportsVariant(account: Pick<QoderAccount, 'variant'>, variant: string): boolean {
   const source = account.variant == null ? 'qoder' : normalizeQoderVariantId(account.variant);
   const target = normalizeQoderVariantId(variant);

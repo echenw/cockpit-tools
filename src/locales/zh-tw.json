@@ -6809,6 +6809,9 @@
     },
     "title": "Qoder 帳號管理",
     "suite": {
+      "client": "用戶端",
+      "switchTarget": "切換目標",
+      "switchToClient": "切換至 {{client}}",
       "sharedAccounts": "同地區的 App 與 IDE 共用帳號，授權或匯入一次，兩端皆可使用。",
       "deleteSharedSingle": "確認刪除此共用帳號？將同時從同地區的 App 和 IDE 清單移除。",
       "deleteSharedMulti": "確認刪除選取的 {{count}} 個共用帳號？將同時從同地區的 App 和 IDE 清單移除。",
@@ -6822,11 +6825,10 @@
     "instances": {
       "unsupported": {
         "descPlatform": "Qoder 應用多開僅支援 macOS、Windows 和 Linux。"
-      },
-      "appMultiInstanceUnsupported": "{{variant}} 用戶端不支援應用多開：官方單一實例機制限制，同一用戶端無法同時執行多個登入狀態；可使用帳號切換功能更換帳號。"
+      }
     },
     "oauth": {
-      "hint": "請在開啟的瀏覽器頁面中完成登入：如果登入頁面未自動開啟，請點擊「複製登入連結」按鈕複製連結並貼到瀏覽器中完成登入。",
+      "hint": "點擊下方按鈕，透過本地區 App 授權流程在瀏覽器中完成 Qoder 授權，無需保持 Qoder 執行。",
       "copyLoginUrl": "複製登入連結",
       "accountNotVisible": "授權帳號未出現在已儲存的帳號清單中"
     },
@@ -6841,9 +6843,9 @@
     },
     "flowNotice": {
       "title": "Qoder 帳號接入說明（點擊展開/收起）",
-      "desc": "目前支援官方授權登入（回調）、本機匯入、JSON 匯入、切號注入、應用多開綁定與配額概覽。登入流程沿用 Qoder 用戶端真實落盤資料。",
+      "desc": "目前支援本地區 App OAuth 授權、本機匯入、JSON 匯入、切號注入、應用多開綁定與配額概覽。瀏覽器授權無需保持 Qoder 執行；切號注入依照 Qoder 用戶端實際的儲存格式寫入。",
       "permission": "權限範圍：讀取 Qoder 本地認證儲存（auth 憑證與使用者資訊），用於帳號切換與工作階段注入；所有資料僅在本機處理。",
-      "network": "網路範圍：OAuth 授權登入需連網請求 Qoder 官方服務完成回調；配額查詢透過 Qoder API 取得用量資料。不會上傳本地金鑰或憑證。"
+      "network": "網路範圍：OAuth 在瀏覽器中開啟本地區 Qoder App 的官方授權頁面，並輪詢 Qoder 官方 OpenAPI 取得裝置授權結果；配額查詢透過 Qoder API 取得用量資料。"
     },
     "addModal": {
       "title": "新增 Qoder 帳號"

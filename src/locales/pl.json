@@ -6809,6 +6809,9 @@
     },
     "title": "Zarządzanie kontami Qoder",
     "suite": {
+      "client": "Klient",
+      "switchTarget": "Klient docelowy",
+      "switchToClient": "Przełącz na {{client}}",
       "sharedAccounts": "App i IDE współdzielą konta w danym regionie. Wystarczy jedna autoryzacja lub import.",
       "deleteSharedSingle": "Usunąć to współdzielone konto z list App i IDE w tym regionie?",
       "deleteSharedMulti": "Usunąć {{count}} współdzielonych kont z list App i IDE w tym regionie?",
@@ -6822,11 +6825,10 @@
     "instances": {
       "unsupported": {
         "descPlatform": "Wiele instancji Qoder jest obsługiwanych tylko w systemach macOS, Windows i Linux."
-      },
-      "appMultiInstanceUnsupported": "Klient {{variant}} nie obsługuje wielu instancji: oficjalny mechanizm pojedynczej instancji uniemożliwia jednoczesne uruchomienie wielu sesji. Użyj funkcji przełączania konta."
+      }
     },
     "oauth": {
-      "hint": "Dokończ logowanie na otwartej stronie w przeglądarce: jeśli strona logowania nie otworzyła się automatycznie, kliknij „Kopiuj link logowania”, skopiuj link i wklej go do przeglądarki, aby zakończyć logowanie.",
+      "hint": "Kliknij przycisk poniżej, aby autoryzować Qoder w przeglądarce przez aplikację App dla danego regionu. Qoder nie musi pozostać uruchomiony.",
       "copyLoginUrl": "Kopiuj link logowania",
       "accountNotVisible": "Autoryzowane konto nie pojawiło się na liście zapisanych kont"
     },
@@ -6841,9 +6843,9 @@
     },
     "flowNotice": {
       "title": "Przewodnik po kontach Qoder (kliknij, aby rozwinac/zwinac)",
-      "desc": "Obsluguje oficjalne logowanie OAuth (callback), import lokalny, import JSON, iniekcje przelaczania konta, powiazanie wielu instancji oraz przeglad limitu. Przeplyw logowania korzysta z rzeczywistych danych zapisywanych przez klienta Qoder.",
+      "desc": "Obsługuje OAuth przez aplikację App dla danego regionu, import lokalny, import JSON, zapis danych logowania przy zmianie konta, powiązanie wielu instancji i przegląd limitów. Autoryzacja w przeglądarce nie wymaga uruchomionego Qoder; zapis jest zgodny z formatem danych klienta Qoder na dysku.",
       "permission": "Zakres uprawnien: odczytuje lokalny magazyn uwierzytelniania Qoder (dane auth i informacje uzytkownika) na potrzeby przelaczania konta i iniekcji sesji; wszystkie dane sa przetwarzane lokalnie na Twoim urzadzeniu.",
-      "network": "Zakres sieci: logowanie OAuth wymaga polaczenia z oficjalnymi uslugami Qoder do obslugi callbacku; zapytania o limit korzystaja z API Qoder. Lokalne klucze i dane uwierzytelniajace nie sa przesylane."
+      "network": "Zakres sieci: OAuth otwiera w przeglądarce oficjalną stronę autoryzacji aplikacji Qoder App dla danego regionu i cyklicznie odpytuje oficjalne OpenAPI Qoder o wynik autoryzacji urządzenia. Zapytania o limity pobierają dane o wykorzystaniu przez API Qoder."
     },
     "addModal": {
       "title": "Dodaj konto Qoder"

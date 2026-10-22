@@ -7029,6 +7029,9 @@
     },
     "title": "Qoder Account",
     "suite": {
+      "client": "Client",
+      "switchTarget": "Switch target",
+      "switchToClient": "Switch to {{client}}",
       "sharedAccounts": "App and IDE share accounts within each region. Authorize or import once to use both.",
       "deleteSharedSingle": "Delete this shared account from both App and IDE lists in this region?",
       "deleteSharedMulti": "Delete {{count}} shared accounts from both App and IDE lists in this region?",
@@ -7041,12 +7044,12 @@
     },
     "flowNotice": {
       "title": "Qoder account guide (click to expand/collapse)",
-      "desc": "Supports official CLI device login authorization, local import, JSON import, account switching injection, multi-instance binding, and quota overview. Browser authorization does not require Qoder to stay running; injection writes back using Qoder client's actual on-disk rules.",
+      "desc": "Supports OAuth through the regional App flow, local import, JSON import, account switching injection, multi-instance binding, and quota overview. Browser authorization does not require Qoder to stay running; injection follows the Qoder client's on-disk format.",
       "permission": "Permission scope: reads Qoder local auth storage, user info, and machine identity caches such as machine_token.json and cache/id for official authorization, local import, account switching, and session injection. All data is processed locally on your machine.",
-      "network": "Network scope: OAuth authorization opens Qoder's official device login page in your browser and polls Qoder official OpenAPI to finish authorization. Quota queries call Qoder APIs for usage data. No local keys, credentials, or raw storage contents are uploaded."
+      "network": "Network scope: OAuth opens the official authorization page for the regional Qoder App in your browser and polls Qoder official OpenAPI for the device authorization result. Quota queries call Qoder APIs for usage data."
     },
     "oauth": {
-      "hint": "Click the button below to complete Qoder authorization in your browser. This uses the official CLI device login flow and does not require Qoder to stay running.",
+      "hint": "Click the button below to authorize Qoder in your browser through the regional App flow. Qoder does not need to stay running.",
       "copyLoginUrl": "Copy Sign In URL",
       "accountNotVisible": "The authorized account did not appear in the saved account list"
     },
@@ -7062,8 +7065,7 @@
     "instances": {
       "unsupported": {
         "descPlatform": "Qoder multi-instance is available only on macOS, Windows, and Linux."
-      },
-      "appMultiInstanceUnsupported": "The {{variant}} client does not support multi-instance: the official single-instance mechanism prevents multiple sessions from running at the same time. Use account switching instead."
+      }
     },
     "addModal": {
       "title": "Add Qoder Account"

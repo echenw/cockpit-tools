@@ -6809,6 +6809,9 @@
     },
     "title": "Qoder Hesap Yönetimi",
     "suite": {
+      "client": "İstemci",
+      "switchTarget": "Hedef istemci",
+      "switchToClient": "{{client}} istemcisine geç",
       "sharedAccounts": "App ve IDE aynı bölgedeki hesapları paylaşır. İkisini de kullanmak için bir kez yetkilendirin veya içe aktarın.",
       "deleteSharedSingle": "Bu ortak hesap bu bölgedeki App ve IDE listelerinden silinsin mi?",
       "deleteSharedMulti": "{{count}} ortak hesap bu bölgedeki App ve IDE listelerinden silinsin mi?",
@@ -6822,11 +6825,10 @@
     "instances": {
       "unsupported": {
         "descPlatform": "Qoder çoklu örnek yalnızca macOS, Windows ve Linux'ta desteklenir."
-      },
-      "appMultiInstanceUnsupported": "{{variant}} istemcisi çoklu örneği desteklemiyor: resmi tek örnek mekanizması aynı anda birden fazla oturum çalıştırılmasını engelliyor. Bunun yerine hesap değiştirmeyi kullanın."
+      }
     },
     "oauth": {
-      "hint": "Açılan tarayıcı sayfasında oturum açmayı tamamlayın: oturum açma sayfası otomatik olarak açılmazsa “Giriş bağlantısını kopyala” seçeneğine tıklayın, bağlantıyı kopyalayıp tarayıcıya yapıştırarak oturum açmayı tamamlayın.",
+      "hint": "Qoder’ı tarayıcıda bölgesel App üzerinden yetkilendirmek için aşağıdaki düğmeye tıklayın. Qoder’ın açık kalması gerekmez.",
       "copyLoginUrl": "Giriş bağlantısını kopyala",
       "accountNotVisible": "Yetkilendirilen hesap kayıtlı hesaplar listesinde görünmedi"
     },
@@ -6841,9 +6843,9 @@
     },
     "flowNotice": {
       "title": "Qoder hesap kilavuzu (genisletmek/daraltmak icin tiklayin)",
-      "desc": "Resmi OAuth girisini (callback), yerel ice aktarmayi, JSON ice aktarmayi, hesap degistirme enjeksiyonunu, coklu ornek baglamayi ve kota genel gorunumunu destekler. Giris akisi Qoder istemcisinin gercek disk verilerini izler.",
+      "desc": "Bölgesel App üzerinden OAuth yetkilendirmesini, yerel içe aktarmayı, JSON içe aktarmayı, hesap değiştirirken kimlik bilgisi yazmayı, çoklu örnek bağlamayı ve kota görünümünü destekler. Tarayıcıda yetkilendirme için Qoder açık olmak zorunda değildir; yazma işlemi Qoder istemcisinin disk biçimini izler.",
       "permission": "Izin kapsami: hesap degistirme ve oturum enjeksiyonu icin Qoder yerel kimlik dogrulama depolamasini (auth kimlik bilgileri ve kullanici bilgileri) okur; tum veriler cihazinizda yerel olarak islenir.",
-      "network": "Ag kapsami: OAuth girisi, callback akisini tamamlamak icin resmi Qoder hizmetlerine erisim gerektirir; kota sorgulari Qoder API kullanir. Yerel anahtarlar veya kimlik bilgileri yuklenmez."
+      "network": "Ağ kapsamı: OAuth, tarayıcıda bölgesel Qoder App’in resmi yetkilendirme sayfasını açar ve cihaz yetkilendirme sonucunu almak için resmi Qoder OpenAPI’yi düzenli olarak sorgular. Kota sorguları, kullanım verilerini Qoder API’lerinden alır."
     },
     "addModal": {
       "title": "Qoder hesabı ekle"

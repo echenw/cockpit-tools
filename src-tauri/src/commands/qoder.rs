@@ -9,6 +9,13 @@ fn resolve_variant_key(raw: Option<&str>) -> Result<String, String> {
     QoderVariantKind::parse(raw).map(|kind| kind.provider_key().to_string())
 }
 
+/// 每个地区共用 App 授权；旧 IDE 入口也进入同一会话，切号目标不影响授权。
+fn resolve_oauth_variant_key(raw: Option<&str>) -> Result<String, String> {
+    let kind = QoderVariantKind::parse(raw)?;
+    let app_kind = if kind.is_cn() { QoderVariantKind::QoderCnApp } else { QoderVariantKind::QoderApp };
+    Ok(app_kind.provider_key().to_string())
+}
+
 fn account_belongs_to_variant(account: &QoderAccount, variant_key: &str) -> bool {
     qoder_account::account_variant_kind(account)
         .map(|kind| QoderVariantKind::parse(Some(variant_key)).is_ok_and(|requested| kind.site() == requested.site()))
@@ -174,7 +181,7 @@ pub async fn qoder_oauth_login_start(
     variant_key: Option<String>,
 ) -> Result<QoderOAuthStartResponse, String> {
     let started_at = Instant::now();
-    let variant = resolve_variant_key(variant_key.as_deref())?;
+    let variant = resolve_oauth_variant_key(variant_key.as_deref())?;
     logger::log_info(&format!(
         "[Qoder OAuth] start 命令触发: variant={}",
         variant
@@ -202,7 +209,7 @@ pub async fn qoder_oauth_login_start(
 pub fn qoder_oauth_login_peek(
     variant_key: Option<String>,
 ) -> Result<Option<QoderOAuthStartResponse>, String> {
-    let variant = resolve_variant_key(variant_key.as_deref())?;
+    let variant = resolve_oauth_variant_key(variant_key.as_deref())?;
     let pending = qoder_oauth::peek_pending_login_for_variant(&variant);
     if let Some(state) = pending.as_ref() {
         logger::log_info(&format!(
@@ -227,7 +234,7 @@ pub async fn qoder_oauth_login_complete(
     variant_key: Option<String>,
 ) -> Result<QoderAccount, String> {
     let started_at = Instant::now();
-    let variant = resolve_variant_key(variant_key.as_deref())?;
+    let variant = resolve_oauth_variant_key(variant_key.as_deref())?;
     logger::log_info(&format!(
         "[Qoder OAuth] complete 命令触发: variant={}, login_id={}",
         variant, login_id
@@ -291,7 +298,7 @@ pub fn qoder_oauth_login_cancel(
     variant_key: Option<String>,
 ) -> Result<(), String> {
     let variant = match variant_key.as_deref() {
-        Some(raw) => Some(resolve_variant_key(Some(raw))?),
+        Some(raw) => Some(resolve_oauth_variant_key(Some(raw))?),
         None => None,
     };
     logger::log_info(&format!(
@@ -653,6 +660,25 @@ pub async fn batch_check_qoder_reward_statuses(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oauth_uses_the_regional_app_without_changing_client_operation_targets() {
+        for (requested, expected) in [
+            ("qoder", "qoder_app"),
+            ("qoder_app", "qoder_app"),
+            ("qoder_cn_ide", "qoder_cn_app"),
+            ("qoder_cn_app", "qoder_cn_app"),
+        ] {
+            let oauth = resolve_oauth_variant_key(Some(requested)).unwrap();
+            assert_eq!(oauth, expected);
+            assert!(qoder_oauth::resolve_qoder_variant_params(&oauth).unwrap().is_app_line);
+            assert_eq!(resolve_variant_key(Some(requested)).unwrap(), requested,
+                "local import, switching and refresh must retain their explicit client");
+        }
+        assert_eq!(resolve_oauth_variant_key(None).unwrap(), "qoder_app");
+        assert_eq!(resolve_oauth_variant_key(Some("qoder-cn-ide")).unwrap(), "qoder_cn_app");
+        assert!(resolve_oauth_variant_key(Some("qoder_eu")).is_err());
+    }
 
     #[test]
     fn failed_app_preparation_only_restarts_a_previously_running_client() {
