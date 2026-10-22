@@ -1338,6 +1338,29 @@
 
 .qoder-accounts-page .qoder-account-subline {
   margin-top: -2px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.qoder-accounts-page .qoder-account-subline .qoder-client-selector {
+  margin-left: auto;
+}
+
+.qoder-accounts-page .qoder-add-client {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 12px;
+  color: var(--text-secondary);
+}
+
+.qoder-accounts-page .qoder-add-client-name {
+  color: var(--text-primary);
+  font-weight: 500;
 }
 
 .qoder-accounts-page .qoder-card-created-at {

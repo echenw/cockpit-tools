@@ -32,6 +32,7 @@ import { openUrl } from '@tauri-apps/plugin-opener';
 import { useTranslation } from 'react-i18next';
 import { TagEditModal } from '../components/TagEditModal';
 import { QoderBatchClaimModal } from '../components/QoderBatchClaimModal';
+import { QoderClientSelector } from '../components/QoderClientSelector';
 import '../components/QoderBatchClaimModal.css';
 import { useActionBubble } from '../components/ActionBubble';
 import { ExportJsonModal } from '../components/ExportJsonModal';
@@ -58,6 +59,7 @@ import {
   QoderVariantId,
   getQoderAccountDisplayEmail,
   getQoderAccountVariants,
+  getQoderClientVariants,
   qoderAccountSupportsVariant,
   getQoderPlanBadge,
   getQoderSubscriptionInfo,
@@ -74,7 +76,6 @@ import {
 import { useExportJsonModal } from '../hooks/useExportJsonModal';
 import { useDropdownPanelPlacement } from '../hooks/useDropdownPanelPlacement';
 import { parseFileCorruptedError } from '../components/FileCorruptedModal';
-import { compareCurrentAccountFirst } from '../utils/currentAccountSort';
 import {
   consumeQueuedExternalProviderImportForPlatform,
   EXTERNAL_PROVIDER_IMPORT_EVENT,
@@ -110,6 +111,10 @@ const QODER_FILTER_FIELD_FILTER_TYPES = 'filter_types';
 const QODER_FILTER_FIELD_TAG_FILTER = 'tag_filter';
 const QODER_FILTER_FIELD_GROUP_BY_TAG = 'group_by_tag';
 const UNTAGGED_KEY = '__untagged__';
+const QODER_REGION_OPTIONS = [
+  { platformId: 'qoder_app' as const, label: 'Qoder' },
+  { platformId: 'qoder_cn_app' as const, label: 'Qoder CN' },
+];
 
 async function emitImportedQoderAccountsChanged(accounts: QoderAccount[]): Promise<void> {
   const variants = [...new Set(accounts.flatMap(getQoderAccountVariants))];
@@ -269,6 +274,16 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
   const { t } = useTranslation();
   const store = useQoderAccountStore();
   const activeVariant = variantId ?? 'qoder';
+  const clientVariants = useMemo(() => getQoderClientVariants(activeVariant), [activeVariant]);
+  const [ideVariant, appVariant] = clientVariants;
+  const [clientTargets, setClientTargets] = useState<Record<string, QoderVariantId>>({});
+  const resolveClientTarget = useCallback(
+    (accountId: string) => clientTargets[accountId] ?? activeVariant,
+    [activeVariant, clientTargets],
+  );
+  const selectClientTarget = useCallback((accountId: string, target: QoderVariantId) => {
+    setClientTargets((previous) => ({ ...previous, [accountId]: target }));
+  }, []);
   const filterScope = normalizeAccountsOverviewScope(activeVariant);
   const currentIds = useQoderCurrentAccountIds(store.accounts);
   const initialFilterPersistenceEnabled =
@@ -324,6 +339,7 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
   const grouping = usePlatformAccountGroups(activeVariant, () => setSelected(new Set()));
   const [showAddModal, setShowAddModal] = useState(false);
   const [addTab, setAddTab] = useState<'oauth' | 'token' | 'import'>('oauth');
+  const [importVariant, setImportVariant] = useState<QoderVariantId>(activeVariant);
 
   const [addStatus, setAddStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [addMessage, setAddMessage] = useState<string | null>(null);
@@ -578,6 +594,15 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
     setImportAutoCloseSeconds(null);
   }, []);
 
+  const selectImportClient = useCallback((next: QoderVariantId) => {
+    if (next === importVariant || addStatus === 'loading') return;
+    importAttemptSeqRef.current += 1;
+    cancelImportAutoClose();
+    setImportVariant(next);
+    setAddStatus('idle');
+    setAddMessage(null);
+  }, [importVariant, addStatus, cancelImportAutoClose]);
+
   const closeAddModal = useCallback(() => {
     importAttemptSeqRef.current += 1;
     cancelImportAutoClose();
@@ -598,13 +623,17 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
   }, [addTab, cancelImportAutoClose, showAddModal]);
 
   const consumeExternalProviderImport = useCallback(() => {
-    const request = consumeQueuedExternalProviderImportForPlatform(activeVariant);
-    if (!request) return;
-    openAddModal('token');
-    setTokenInput(request.token);
-    setAddStatus('idle');
-    setAddMessage(null);
-  }, [activeVariant, openAddModal]);
+    for (const client of clientVariants) {
+      const request = consumeQueuedExternalProviderImportForPlatform(client);
+      if (!request) continue;
+      setImportVariant(client);
+      openAddModal('token');
+      setTokenInput(request.token);
+      setAddStatus('idle');
+      setAddMessage(null);
+      break;
+    }
+  }, [clientVariants, openAddModal]);
 
   useEffect(() => {
     const handleExternalImportEvent = () => {
@@ -648,7 +677,10 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
     return () => window.clearInterval(timer);
   }, [accounts, rewardNow]);
 
-  const currentAccountId = currentIds[activeVariant];
+  const currentAccountIds = useMemo(
+    () => new Set(clientVariants.flatMap((variant) => currentIds[variant] ? [currentIds[variant]] : [])),
+    [clientVariants, currentIds],
+  );
 
   const startImportAutoClose = useCallback((seconds = IMPORT_AUTO_CLOSE_SECONDS) => {
     cancelImportAutoClose();
@@ -672,7 +704,7 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
       const loginId = oauthSessionRef.current ?? oauthLoginId ?? undefined;
       if (loginId) {
         logQoderOauthUi('session:cancel-on-modal-close', { loginId });
-        void qoderService.qoderOauthLoginCancel(loginId, activeVariant).catch(() => {});
+        void qoderService.qoderOauthLoginCancel(loginId, appVariant).catch(() => {});
       }
       setAddStatus('idle');
       setAddMessage(null);
@@ -681,7 +713,7 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
       resetOauthState();
       cancelImportAutoClose();
     }
-  }, [activeVariant, cancelImportAutoClose, oauthLoginId, resetOauthState, showAddModal]);
+  }, [appVariant, cancelImportAutoClose, oauthLoginId, resetOauthState, showAddModal]);
 
   useEffect(() => {
     if (importAutoCloseSeconds === 0) {
@@ -697,7 +729,7 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
         importAutoCloseTimerRef.current = null;
       }
     },
-    [activeVariant],
+    [importVariant],
   );
 
   useEffect(() => {
@@ -706,10 +738,10 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
     const loginId = oauthSessionRef.current ?? oauthLoginId ?? undefined;
     if (loginId) {
       logQoderOauthUi('session:cancel-on-tab-change', { loginId, addTab });
-      void qoderService.qoderOauthLoginCancel(loginId, activeVariant).catch(() => {});
+      void qoderService.qoderOauthLoginCancel(loginId, appVariant).catch(() => {});
     }
     resetOauthState();
-  }, [activeVariant, addTab, oauthLoginId, resetOauthState, showAddModal]);
+  }, [appVariant, addTab, oauthLoginId, resetOauthState, showAddModal]);
 
   useEffect(
     () => () => {
@@ -718,13 +750,13 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
       if (loginId) {
         logQoderOauthUi('session:cancel-on-unmount', { loginId });
         void qoderService
-          .qoderOauthLoginCancel(loginId, activeVariant)
+          .qoderOauthLoginCancel(loginId, appVariant)
           .catch(() => {});
       }
       oauthSessionRef.current = null;
       oauthCompletingLoginIdRef.current = null;
     },
-    [activeVariant],
+    [appVariant],
   );
 
   useEffect(() => {
@@ -808,7 +840,7 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
 
   const compareAccountsBySort = useCallback(
     (a: QoderAccount, b: QoderAccount) => {
-      const currentFirstDiff = compareCurrentAccountFirst(a.id, b.id, currentAccountId);
+      const currentFirstDiff = Number(currentAccountIds.has(b.id)) - Number(currentAccountIds.has(a.id));
       if (currentFirstDiff !== 0) {
         return currentFirstDiff;
       }
@@ -828,7 +860,7 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
       const cmp = a.created_at - b.created_at;
       return sortDirection === 'asc' ? cmp : -cmp;
     },
-    [currentAccountId, sortBy, sortDirection],
+    [currentAccountIds, sortBy, sortDirection],
   );
 
   const filteredAccounts = useMemo(() => {
@@ -1123,8 +1155,9 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
           : (document.getElementById(`qoder-btn-switch-${accountId}`) ??
              document.getElementById(`qoder-list-btn-switch-${accountId}`));
       setInjecting(accountId);
+      const target = resolveClientTarget(accountId);
       try {
-        await store.switchAccount(accountId, activeVariant);
+        await store.switchAccount(accountId, target);
         showBubble(anchor, t('accounts.switchSuccess', '切换成功'), 'success');
       } catch (error) {
         showBubble(
@@ -1138,7 +1171,7 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
         setInjecting(null);
       }
     },
-    [activeVariant, injecting, showBubble, store, t],
+    [resolveClientTarget, injecting, showBubble, store, t],
   );
 
   const handleDeleteAccounts = useCallback(
@@ -1276,7 +1309,7 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
     setAddMessage(null);
     cancelImportAutoClose();
     try {
-      const imported = await qoderService.importQoderFromLocal(activeVariant);
+      const imported = await qoderService.importQoderFromLocal(importVariant);
       await store.fetchAccounts();
       await emitImportedQoderAccountsChanged(imported);
       await new Promise((resolve) => setTimeout(resolve, 180));
@@ -1290,7 +1323,7 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
       setAddStatus('error');
       setAddMessage(t('qoder.import.localFailed', '本机导入失败：{{error}}', { error: String(error) }));
     }
-  }, [activeVariant, addStatus, cancelImportAutoClose, startImportAutoClose, store, t]);
+  }, [importVariant, addStatus, cancelImportAutoClose, startImportAutoClose, store, t]);
 
   const handleImportJsonFile = useCallback(
     async (file: File) => {
@@ -1302,7 +1335,7 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
       try {
         const content = await file.text();
         if (attemptSeq !== importAttemptSeqRef.current) return;
-        const imported = await qoderService.importQoderFromJson(content, activeVariant);
+        const imported = await qoderService.importQoderFromJson(content, importVariant);
         await store.fetchAccounts();
         await emitImportedQoderAccountsChanged(imported);
         if (attemptSeq !== importAttemptSeqRef.current) return;
@@ -1322,7 +1355,7 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
         setAddMessage(t('accounts.importJsonFailed', 'JSON 导入失败：{{error}}', { error: detail }));
       }
     },
-    [activeVariant, addStatus, cancelImportAutoClose, startImportAutoClose, store, t],
+    [importVariant, addStatus, cancelImportAutoClose, startImportAutoClose, store, t],
   );
 
   const handleTokenImport = useCallback(async () => {
@@ -1338,7 +1371,7 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
     setAddMessage(null);
     cancelImportAutoClose();
     try {
-      const imported = await qoderService.importQoderFromJson(payload, activeVariant);
+      const imported = await qoderService.importQoderFromJson(payload, importVariant);
       await store.fetchAccounts();
       await emitImportedQoderAccountsChanged(imported);
       if (attemptSeq !== importAttemptSeqRef.current) return;
@@ -1365,7 +1398,7 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
         }),
       );
     }
-  }, [activeVariant, addStatus, cancelImportAutoClose, startImportAutoClose, store, t, tokenInput]);
+  }, [importVariant, addStatus, cancelImportAutoClose, startImportAutoClose, store, t, tokenInput]);
 
   const handlePrepareOauth = useCallback(async () => {
     if (oauthPreparing || oauthCompleting) return;
@@ -1379,7 +1412,7 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
     const previousLoginId = oauthSessionRef.current ?? oauthLoginId ?? undefined;
     if (previousLoginId) {
       logQoderOauthUi('prepare:cancel-previous', { loginId: previousLoginId });
-      await qoderService.qoderOauthLoginCancel(previousLoginId, activeVariant).catch(() => {});
+      await qoderService.qoderOauthLoginCancel(previousLoginId, appVariant).catch(() => {});
     }
 
     oauthSessionRef.current = null;
@@ -1398,7 +1431,7 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
         oauthCompletingLoginIdRef.current = loginId;
         setOauthCompleting(true);
         void qoderService
-          .qoderOauthLoginComplete(loginId, activeVariant)
+          .qoderOauthLoginComplete(loginId, appVariant)
           .then(async (completedAccount) => {
             logQoderOauthUi('complete:resolved', { loginId });
             if (attemptSeq !== oauthAttemptSeqRef.current) return;
@@ -1407,7 +1440,7 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
             // 通用 store 在列表读取失败时可能保留旧缓存；必须先核对后端列表，
             // 再确认目标变体页面已加载这次完成的账号 ID。
             const isCompletedAccount = (account: QoderAccount) =>
-              account.id === completedAccount.id && qoderAccountSupportsVariant(account, activeVariant);
+              account.id === completedAccount.id && qoderAccountSupportsVariant(account, appVariant);
             let accountVisible = false;
             let listError: string | null = null;
             for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -1471,12 +1504,12 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
       try {
         logQoderOauthUi('prepare:invoke-start', { timeoutMs: QODER_OAUTH_START_TIMEOUT_MS });
         response = await withTimeout(
-          qoderService.qoderOauthLoginStart(activeVariant),
+          qoderService.qoderOauthLoginStart(appVariant),
           QODER_OAUTH_START_TIMEOUT_MS,
           QODER_OAUTH_START_TIMEOUT_ERROR,
         );
         if (attemptSeq !== oauthAttemptSeqRef.current) {
-          void qoderService.qoderOauthLoginCancel(response.loginId, activeVariant).catch(() => {});
+          void qoderService.qoderOauthLoginCancel(response.loginId, appVariant).catch(() => {});
           logQoderOauthUi('prepare:start-stale-after-start', {
             loginId: response.loginId,
             attemptSeq,
@@ -1505,7 +1538,7 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
         for (let attempt = 1; attempt <= QODER_OAUTH_PEEK_RETRY_MAX; attempt += 1) {
           if (attemptSeq !== oauthAttemptSeqRef.current) return;
           const pending = await withTimeout(
-            qoderService.qoderOauthLoginPeek(activeVariant),
+            qoderService.qoderOauthLoginPeek(appVariant),
             QODER_OAUTH_PEEK_TIMEOUT_MS,
             QODER_OAUTH_PEEK_TIMEOUT_ERROR,
           ).catch((peekError) => {
@@ -1519,7 +1552,7 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
           });
           if (attemptSeq !== oauthAttemptSeqRef.current) {
             if (pending?.loginId) {
-              void qoderService.qoderOauthLoginCancel(pending.loginId, activeVariant).catch(() => {});
+              void qoderService.qoderOauthLoginCancel(pending.loginId, appVariant).catch(() => {});
             }
             return;
           }
@@ -1542,7 +1575,7 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
       }
 
       if (attemptSeq !== oauthAttemptSeqRef.current) {
-        void qoderService.qoderOauthLoginCancel(response.loginId, activeVariant).catch(() => {});
+        void qoderService.qoderOauthLoginCancel(response.loginId, appVariant).catch(() => {});
         logQoderOauthUi('prepare:start-stale-before-apply', {
           loginId: response.loginId,
           attemptSeq,
@@ -1582,7 +1615,7 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
       setAddStatus('error');
       setAddMessage(t('common.shared.oauth.failed', '授权失败') + ': ' + msg);
     }
-  }, [activeVariant, closeAddModal, oauthCompleting, oauthLoginId, oauthPreparing, store, t]);
+  }, [appVariant, closeAddModal, oauthCompleting, oauthLoginId, oauthPreparing, store, t]);
 
   // Keep a stable ref to avoid putting handlePrepareOauth in useEffect deps
   handlePrepareOauthRef.current = handlePrepareOauth;
@@ -1617,7 +1650,7 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
     if (oauthUrl || oauthPreparing || oauthCompleting) return;
     logQoderOauthUi('effect:auto-prepare-fire');
     void handlePrepareOauthRef.current?.();
-  }, [activeVariant, addTab, oauthLoginId, oauthPreparing, oauthUrl, showAddModal]);
+  }, [appVariant, addTab, oauthLoginId, oauthPreparing, oauthUrl, showAddModal]);
 
   useEffect(() => {
     if (!showAddModal || addTab !== 'oauth') return;
@@ -1625,7 +1658,7 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
 
     let cancelled = false;
     const adoptPendingSession = async () => {
-      const pending = await qoderService.qoderOauthLoginPeek(activeVariant).catch(() => null);
+      const pending = await qoderService.qoderOauthLoginPeek(appVariant).catch(() => null);
       if (cancelled || !pending?.loginId) return;
       const verificationUri = pending.verificationUri;
       if (!verificationUri) return;
@@ -1650,7 +1683,7 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [activeVariant, addTab, oauthLoginId, oauthPreparing, oauthUrl, showAddModal]);
+  }, [appVariant, addTab, oauthLoginId, oauthPreparing, oauthUrl, showAddModal]);
 
   const handlePickImportFile = useCallback(() => {
     importFileInputRef.current?.click();
@@ -1858,7 +1891,7 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
     (items: QoderAccount[], groupKey?: string) =>
       items.map((account) => {
         const maskedEmail = maskAccountText(getQoderAccountDisplayEmail(account));
-        const isCurrent = currentAccountId === account.id;
+        const isCurrent = currentAccountIds.has(account.id);
         const isSelected = selected.has(account.id);
         const accountTags = (account.tags || []).map((tag) => tag.trim()).filter(Boolean);
         const visibleTags = accountTags.slice(0, 2);
@@ -1869,6 +1902,8 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
         const createdAtText = formatDateTime(account.created_at);
         const isRefreshing = refreshing === account.id;
         const isInjecting = injecting === account.id;
+        const switchTarget = resolveClientTarget(account.id);
+        const switchTitle = t('qoder.suite.switchToClient', '切换到 {{client}}', { client: QODER_VARIANT_DISPLAY_NAMES[switchTarget] });
         const quotaError = account.quota_query_last_error?.trim();
         const rewardStatus = resolveQoderRewardStatus(account, rewardNow);
         const rewardActionTitle = rewardStatus === 'claimed'
@@ -1934,6 +1969,12 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
               <span className="kiro-table-subline" title={createdAtText}>
                 {updatedText}
               </span>
+              <QoderClientSelector
+                value={switchTarget}
+                onChange={(target) => selectClientTarget(account.id, target)}
+                label={t('qoder.suite.switchTarget', '换号目标')}
+                disabled={isInjecting || deleting}
+              />
             </div>
 
             {accountTags.length > 0 && (
@@ -1958,7 +1999,8 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
                   id={`qoder-btn-switch-${account.id}`}
                   className="card-action-btn success"
                   onClick={(e) => void handleSwitch(account.id, e.currentTarget)}
-                  title={t('dashboard.switch', '切换')}
+                  title={switchTitle}
+                  aria-label={switchTitle}
                   disabled={isInjecting || deleting}
                 >
                   {isInjecting ? <RotateCw size={14} className="loading-spinner" /> : <Play size={14} />}
@@ -2029,7 +2071,7 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
       }),
     [
       claimingRewardIds,
-      currentAccountId,
+      currentAccountIds,
       deleting,
       exportModal.preparing,
       exportModal.saving,
@@ -2042,6 +2084,8 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
       maskAccountText,
       refreshing,
       renderQuotaSection,
+      resolveClientTarget,
+      selectClientTarget,
       resolveUpdatedText,
       rewardNow,
       selected,
@@ -2056,10 +2100,12 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
         const plan = getQoderPlanBadge(account);
         const planClass = resolveQoderPlanBadgeClass(plan);
         const quota = resolveQuotaDisplay(account);
-        const isCurrent = currentAccountId === account.id;
+        const isCurrent = currentAccountIds.has(account.id);
         const isSelected = selected.has(account.id);
         const isRefreshing = refreshing === account.id;
         const isInjecting = injecting === account.id;
+        const switchTarget = resolveClientTarget(account.id);
+        const switchTitle = t('qoder.suite.switchToClient', '切换到 {{client}}', { client: QODER_VARIANT_DISPLAY_NAMES[switchTarget] });
         const quotaError = account.quota_query_last_error?.trim();
         const rewardStatus = resolveQoderRewardStatus(account, rewardNow);
         const rewardActionTitle = rewardStatus === 'claimed'
@@ -2108,6 +2154,12 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
                     </span>
                   )}
                 </div>
+                <QoderClientSelector
+                  value={switchTarget}
+                  onChange={(target) => selectClientTarget(account.id, target)}
+                  label={t('qoder.suite.switchTarget', '换号目标')}
+                  disabled={isInjecting || deleting}
+                />
                 {quotaError && (
                   <div className="account-sub-line">
                     <span className="status-pill warning" title={quotaError}>
@@ -2175,7 +2227,8 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
                   id={`qoder-list-btn-switch-${account.id}`}
                   className="action-btn"
                   onClick={(e) => void handleSwitch(account.id, e.currentTarget)}
-                  title={t('dashboard.switch', '切换')}
+                  title={switchTitle}
+                  aria-label={switchTitle}
                   disabled={isInjecting || deleting}
                 >
                   {isInjecting ? <RotateCw size={14} className="loading-spinner" /> : <Play size={14} />}
@@ -2237,7 +2290,7 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
       }),
     [
       claimingRewardIds,
-      currentAccountId,
+      currentAccountIds,
       deleting,
       exportModal.preparing,
       exportModal.saving,
@@ -2250,6 +2303,8 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
       maskAccountText,
       refreshing,
       resolveQuotaDisplay,
+      resolveClientTarget,
+      selectClientTarget,
       rewardNow,
       selected,
       t,
@@ -2342,27 +2397,14 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
   return (
     <div className="ghcp-accounts-page qoder-accounts-page">
       <PlatformOverviewTabsHeader
-        platform={activeVariant}
+        platform={appVariant}
+        platformOptions={QODER_REGION_OPTIONS}
         active={activeTab}
         onTabChange={setActiveTab}
       />
 
       {activeTab === 'instances' ? (
-        activeVariant === 'qoder' || activeVariant === 'qoder_cn_ide' ? (
-          <QoderInstancesContent variantId={activeVariant} accountsForSelect={filteredAccounts} />
-        ) : (
-          <div className="ghcp-flow-notice" role="note">
-            <div className="ghcp-flow-notice-body">
-              <div className="ghcp-flow-notice-desc">
-                {t(
-                  'qoder.instances.appMultiInstanceUnsupported',
-                  '{{variant}} 客户端不支持应用多开：官方单实例机制限制，同一客户端无法同时运行多个登录态；可使用账号切换功能更换账号。',
-                  { variant: QODER_VARIANT_DISPLAY_NAMES[activeVariant] },
-                )}
-              </div>
-            </div>
-          </div>
-        )
+        <QoderInstancesContent variantId={ideVariant} accountsForSelect={filteredAccounts} />
       ) : (
         <>
           <div className={`ghcp-flow-notice ${isFlowNoticeCollapsed ? 'collapsed' : ''}`} role="note" aria-live="polite">
@@ -2389,12 +2431,12 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
                 <div className="ghcp-flow-notice-desc">
                   {t(
                     'qoder.flowNotice.desc',
-                    '当前支持官方授权登录（回调）、本地导入、JSON 导入、切号注入、应用多开绑定与配额概览。登录流程沿用 Qoder 客户端真实落盘数据。',
+                    '当前支持本地区 App OAuth 授权、本地导入、JSON 导入、切号注入、应用多开绑定与配额概览。浏览器授权无需保持 Qoder 运行；切号注入按 Qoder 客户端真实落盘规则写回。',
                   )}
                 </div>
                 <ul className="ghcp-flow-notice-list">
                   <li>{t('qoder.flowNotice.permission', '权限范围：读取 Qoder 本地认证存储（auth 凭据与用户信息），用于账号切换与会话注入；所有数据仅在本机处理。')}</li>
-                  <li>{t('qoder.flowNotice.network', '网络范围：OAuth 授权登录需联网请求 Qoder 官方服务完成回调；配额查询通过 Qoder API 获取用量数据。不上传本地密钥或凭证。')}</li>
+                  <li>{t('qoder.flowNotice.network', '网络范围：OAuth 在浏览器中打开本地区 Qoder App 的官方授权页面，并轮询 Qoder 官方 OpenAPI 获取设备授权结果；配额查询通过 Qoder API 获取用量数据。')}</li>
                 </ul>
               </div>
             )}
@@ -2701,11 +2743,23 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
             </div>
             <div className="modal-body">
               <MfaQuickCodeSelect />
+              {addTab !== 'oauth' && (
+                <div className="qoder-add-client">
+                  <span>{t('qoder.suite.client', '客户端')}</span>
+                  <QoderClientSelector
+                    value={importVariant}
+                    onChange={selectImportClient}
+                    label={t('qoder.suite.client', '客户端')}
+                    disabled={addStatus === 'loading'}
+                  />
+                  <span className="qoder-add-client-name">{QODER_VARIANT_DISPLAY_NAMES[importVariant]}</span>
+                </div>
+              )}
               <p className="section-desc">{t('qoder.suite.sharedAccounts', '同地区的 App 与 IDE 共用账号，授权或导入一次，两端都可使用。')}</p>
               {addTab === 'oauth' ? (
                 <div className="add-section">
                   <p className="section-desc">
-                    {t('qoder.oauth.hint', '点击下方按钮，在浏览器中完成 Qoder 账号 OAuth 授权。')}
+                    {t('qoder.oauth.hint', '点击下方按钮，通过本地区 App 授权链路在浏览器中完成 Qoder 授权，无需保持 Qoder 运行。')}
                   </p>
                   {oauthError ? (
                     <div className="add-status error">

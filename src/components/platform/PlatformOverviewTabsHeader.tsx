@@ -21,7 +21,7 @@ import {
   usePlatformLayoutStore,
 } from '../../stores/usePlatformLayoutStore';
 import { getPlatformLabel } from '../../utils/platformMeta';
-import { PlatformGroupSwitcher } from './PlatformGroupSwitcher';
+import { PlatformGroupSwitcher, type PlatformGroupSwitcherOption } from './PlatformGroupSwitcher';
 import { useRemoteConfigStore } from '../../stores/useRemoteConfigStore';
 
 export type PlatformOverviewTab =
@@ -61,6 +61,7 @@ interface PlatformOverviewTabsHeaderProps<T extends string> {
   tabs?: T[];
   tabPlacement?: Partial<Record<T, 'top' | 'more'>>;
   pageRegistry?: { id: T; label: string; icon: ReactNode }[];
+  platformOptions?: PlatformGroupSwitcherOption[];
 }
 
 interface PlatformOverviewConfig {
@@ -164,6 +165,7 @@ export function PlatformOverviewTabsHeader<T extends string = PlatformOverviewTa
   tabs,
   tabPlacement,
   pageRegistry,
+  platformOptions,
 }: PlatformOverviewTabsHeaderProps<T>) {
   const { t } = useTranslation();
   const [moreOpen, setMoreOpen] = useState(false);
@@ -193,10 +195,11 @@ export function PlatformOverviewTabsHeader<T extends string = PlatformOverviewTa
   const currentPlatformLabel = getPlatformLabel(currentPlatformId, t);
   const currentDisplayName = useMemo(
     () =>
-      currentGroup
+      platformOptions?.find((option) => option.platformId === currentPlatformId)?.label ??
+      (currentGroup
         ? resolveGroupChildName(currentGroup, currentPlatformId, currentPlatformLabel || config.platformLabel)
-        : currentPlatformLabel || config.platformLabel,
-    [currentGroup, currentPlatformId, currentPlatformLabel, config.platformLabel],
+        : currentPlatformLabel || config.platformLabel),
+    [platformOptions, currentGroup, currentPlatformId, currentPlatformLabel, config.platformLabel],
   );
   const switchOptions = useMemo(
     () =>
@@ -300,7 +303,9 @@ export function PlatformOverviewTabsHeader<T extends string = PlatformOverviewTa
           <PlatformGroupSwitcher
             currentPlatformId={currentPlatformId}
             currentLabel={currentDisplayName}
-            options={switchOptions}
+            options={platformOptions?.filter((option) =>
+              option.platformId === currentPlatformId || !remoteHiddenPlatformSet.has(option.platformId),
+            ) ?? switchOptions}
             currentGroupId={currentGroup?.id ?? null}
           />
         </div>

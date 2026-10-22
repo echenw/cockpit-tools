@@ -2134,10 +2134,19 @@ fn get_string_from_object(
 ) -> Option<String> {
     get_object_field(object, keys).and_then(value_to_string)
 }
+
+fn resolve_app_login_params(variant_key: &str) -> Result<QoderVariantParams, String> {
+    let params = resolve_qoder_variant_params(variant_key)?;
+    if !params.kind.is_app() {
+        return Err("Qoder OAuth 仅支持 App 授权，请使用 Qoder 或 Qoder CN 授权入口".into());
+    }
+    Ok(params)
+}
+
 pub async fn start_login_for_variant(
     variant_key: &str,
 ) -> Result<QoderOAuthStartResponse, String> {
-    let params = resolve_qoder_variant_params(variant_key)?;
+    let params = resolve_app_login_params(variant_key)?;
     let expected_nonce = Uuid::new_v4().to_string();
     let machine_uuid = Uuid::new_v4();
     let machine_id = if params.kind.is_cn() {
@@ -2177,6 +2186,7 @@ pub async fn complete_login(
     login_id: &str,
     expected_variant_key: &str,
 ) -> Result<QoderAccount, String> {
+    let expected_variant_key = resolve_app_login_params(expected_variant_key)?.variant_key;
     logger::log_info(&format!(
         "[Qoder OAuth] 开始等待回调完成: login_id={}",
         login_id
@@ -2271,7 +2281,7 @@ pub async fn hydrate_login_account(
     granted: QoderAccount,
     variant_key: &str,
 ) -> Result<(), String> {
-    let params = resolve_qoder_variant_params(variant_key)?;
+    let params = resolve_app_login_params(variant_key)?;
     let granted_view = qoder_account::account_for_variant(&granted, params.kind)?;
     let expected_token = extract_access_token_from_account(&granted_view)
         .ok_or("Qoder 已授权账号缺少 device token")?;
@@ -2308,24 +2318,14 @@ pub async fn hydrate_login_account(
         }
         Err(err) => errors.push(err),
     }
-    if !params.is_app_line {
-        match fetch_qoder_user_status_bundle(&client, &params, params.openapi_base_url,
-            &expected_token, machine_info.as_ref()).await {
-            Ok((status, policy)) => {
-                ensure_refresh_identity_consistent(&target, &status)?;
-                merge_user_status_into_user_info(&mut raw, &status, policy.as_ref());
-            }
-            Err(err) => errors.push(err),
-        }
-    } else {
-        // job 凭据为 App 消费者的投影，失败不撤销已经保存的设备授权。
-        match exchange_app_job_token(&client, params.openapi_base_url,
-            &expected_token, QODER_APP_SHARED_CLIENT_ID).await {
-            Ok(bundle) => apply_refreshed_job_token(&mut raw, &QoderRefreshedJobToken {
-                token: bundle.token, refresh_token: bundle.refresh_token, raw: bundle.raw,
-            }),
-            Err(err) => errors.push(err),
-        }
+    // 授权后只补齐 App job 凭据；IDE 资料由切号准备链路处理。
+    // job 查询失败不撤销已经保存的设备授权。
+    match exchange_app_job_token(&client, params.openapi_base_url,
+        &expected_token, QODER_APP_SHARED_CLIENT_ID).await {
+        Ok(bundle) => apply_refreshed_job_token(&mut raw, &QoderRefreshedJobToken {
+            token: bundle.token, refresh_token: bundle.refresh_token, raw: bundle.raw,
+        }),
+        Err(err) => errors.push(err),
     }
     let plan = match fetch_qoder_user_plan(&client, &params, params.openapi_base_url,
         &expected_token, machine_info.as_ref()).await {
@@ -2345,7 +2345,8 @@ pub async fn hydrate_login_account(
 }
 
 pub fn peek_pending_login_for_variant(variant_key: &str) -> Option<QoderOAuthStartResponse> {
-    let state = peek_pending_state_for_variant(variant_key)?;
+    let params = resolve_app_login_params(variant_key).ok()?;
+    let state = peek_pending_state_for_variant(params.variant_key)?;
     let now = now_timestamp();
     Some(pending_state_to_response(&state, now))
 }
@@ -2354,6 +2355,7 @@ pub fn cancel_login_for_variant(
     login_id: Option<&str>,
     variant_key: Option<&str>,
 ) -> Result<(), String> {
+    let variant_key = variant_key.map(resolve_app_login_params).transpose()?.map(|params| params.variant_key);
     let mut guard = PENDING_OAUTH_STATES
         .lock()
         .map_err(|_| "获取 Qoder OAuth 状态锁失败".to_string())?;
@@ -3009,7 +3011,7 @@ mod tests {
         user_info
     }
 
-    fn cn_ide_login_fixture() -> (QoderAccount, Value) {
+    fn cn_ide_injection_fixture() -> (QoderAccount, Value) {
         let raw = serde_json::json!({
             "id": "fixture-cn-user",
             "name": "fixture-name",
@@ -3030,8 +3032,8 @@ mod tests {
     }
 
     #[test]
-    fn cn_ide_login_requires_native_status_and_preserves_rotated_credentials() {
-        let (target, mut raw) = cn_ide_login_fixture();
+    fn cn_ide_injection_requires_native_status_and_preserves_rotated_credentials() {
+        let (target, mut raw) = cn_ide_injection_fixture();
         // App 的 RT 可以兑换 token，但 token 本身不足以启动 IDE 的服务登录。
         assert!(cn_ide_access_token_is_current(&raw));
         assert!(ensure_cn_ide_login_info_ready(&raw).is_err());
@@ -3059,8 +3061,8 @@ mod tests {
     }
 
     #[test]
-    fn cn_ide_login_rejects_foreign_identity_disallowed_status_and_bad_expiry() {
-        let (target, mut raw) = cn_ide_login_fixture();
+    fn cn_ide_injection_rejects_foreign_identity_disallowed_status_and_bad_expiry() {
+        let (target, mut raw) = cn_ide_injection_fixture();
         let original = raw.clone();
         assert!(merge_cn_ide_login_status(
             &target, &mut raw,
@@ -3231,10 +3233,10 @@ mod tests {
     }
 
     #[test]
-    fn baseline_single_slot_overwrite_semantics() {
+    fn app_login_retry_replaces_previous_session() {
         let _serial = SLOT_TEST_SERIAL.lock().expect("serial slot tests");
         let first = PendingOAuthState {
-            variant_key: QODER_VARIANT_QODER.to_string(),
+            variant_key: QODER_VARIANT_QODER_APP.to_string(),
             login_id: "baseline-first".to_string(),
             expected_nonce: "n".to_string(),
             code_verifier: "v".to_string(),
@@ -3254,13 +3256,13 @@ mod tests {
             let guard = PENDING_OAUTH_STATES.lock().expect("lock slots");
             assert_eq!(
                 guard
-                    .get(QODER_VARIANT_QODER)
+                    .get(QODER_VARIANT_QODER_APP)
                     .map(|s| s.login_id.as_str()),
                 Some("baseline-second")
             );
             assert!(!guard.values().any(|s| s.login_id == "baseline-first"));
         }
-        let _ = cancel_login_for_variant(Some("baseline-second"), Some(QODER_VARIANT_QODER));
+        let _ = cancel_login_for_variant(Some("baseline-second"), Some(QODER_VARIANT_QODER_APP));
     }
 
     #[test]
@@ -3293,10 +3295,11 @@ mod tests {
 
     static SLOT_TEST_SERIAL: std::sync::LazyLock<std::sync::Mutex<()>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
-    fn test_variant_keys() -> [&'static str; 4] {
-        crate::modules::qoder_variant::all_qoder_variant_kinds().map(|kind| kind.provider_key())
+    fn test_login_keys() -> [&'static str; 2] {
+        [QODER_VARIANT_QODER_APP, QODER_VARIANT_QODER_CN_APP]
     }
-    fn test_pending_state(variant_key: &str, login_id: &str) -> PendingOAuthState {        PendingOAuthState {
+    fn test_pending_state(variant_key: &str, login_id: &str) -> PendingOAuthState {
+        PendingOAuthState {
             variant_key: variant_key.to_string(),
             login_id: login_id.to_string(),
             expected_nonce: "n".to_string(),
@@ -3310,88 +3313,52 @@ mod tests {
     }
 
     #[test]
-    fn qoder_login_slots_variant_matrix_resolves() {
-        let keys = test_variant_keys();
-        assert_eq!(
-            keys,
-            ["qoder", "qoder_app", "qoder_cn_ide", "qoder_cn_app"]
-        );
-
-        let ide = resolve_qoder_variant_params("qoder").expect("qoder params");
-        assert_eq!(ide.kind.display_name(), "Qoder IDE");
-        assert_eq!(ide.site, "intl");
-        assert_eq!(ide.login_base_url, DEFAULT_LOGIN_BASE_URL);
-        assert_eq!(ide.openapi_base_url, DEFAULT_OPENAPI_BASE_URL);
-        assert_eq!(ide.client_id, Some(QODER_DEVICE_CLIENT_ID));
-        assert!(!ide.is_app_line);
-
-        let app = resolve_qoder_variant_params("qoder_app").expect("qoder_app params");
-        assert_eq!(app.kind.display_name(), "Qoder");
-        assert_eq!(app.site, "intl");
-        assert_eq!(app.openapi_base_url, DEFAULT_OPENAPI_BASE_URL);
-        assert_eq!(app.client_id, Some(QODER_DEVICE_CLIENT_ID));
-        assert!(app.is_app_line);
-
-        let cn_ide = resolve_qoder_variant_params("qoder_cn_ide").expect("cn ide params");
-        assert_eq!(cn_ide.kind.display_name(), "Qoder CN IDE");
-        assert_eq!(cn_ide.site, "cn");
-        assert_eq!(cn_ide.login_base_url, QODER_CN_LOGIN_BASE_URL);
-        assert_eq!(cn_ide.openapi_base_url, QODER_CN_OPENAPI_BASE_URL);
-        assert_eq!(cn_ide.client_id, Some(QODER_DESKTOP_CLIENT_ID));
-        assert!(!cn_ide.is_app_line);
-
-        let cn_app = resolve_qoder_variant_params("qoder_cn_app").expect("cn app params");
-        assert_eq!(cn_app.kind.display_name(), "Qoder CN");
-        assert_eq!(cn_app.site, "cn");
-        assert_eq!(cn_app.login_base_url, QODER_CN_LOGIN_BASE_URL);
-        assert_eq!(cn_app.openapi_base_url, QODER_CN_OPENAPI_BASE_URL);
-        assert_eq!(cn_app.client_id, Some(QODER_DESKTOP_CLIENT_ID));
-        assert!(cn_app.is_app_line);
-
-        let err = resolve_qoder_variant_params("qoder_eu").expect_err("unknown key errors");
-        assert!(err.contains("qoder_eu"));
+    fn client_params_preserve_refresh_and_injection_routing() {
+        for (key, site, openapi, app_line) in [
+            ("qoder", "intl", DEFAULT_OPENAPI_BASE_URL, false),
+            ("qoder_app", "intl", DEFAULT_OPENAPI_BASE_URL, true),
+            ("qoder_cn_ide", "cn", QODER_CN_OPENAPI_BASE_URL, false),
+            ("qoder_cn_app", "cn", QODER_CN_OPENAPI_BASE_URL, true),
+        ] {
+            let params = resolve_qoder_variant_params(key).unwrap();
+            assert_eq!(params.kind.provider_key(), key);
+            assert_eq!(params.site, site);
+            assert_eq!(params.openapi_base_url, openapi);
+            assert_eq!(params.is_app_line, app_line);
+        }
+        assert!(resolve_qoder_variant_params("qoder_eu").is_err());
     }
 
     #[test]
-    fn qoder_login_slots_concurrent_variants_coexist() {
+    fn regional_app_login_sessions_coexist_and_retry_independently() {
         let _serial = SLOT_TEST_SERIAL.lock().expect("serial slot tests");
-        for key in test_variant_keys() {
-            let _ = cancel_login_for_variant(None, Some(key));
-        }
-        for key in test_variant_keys() {
-            insert_pending_state(test_pending_state(key, &format!("slot-{}", key)));
+        for key in test_login_keys() {
+            cancel_login_for_variant(None, Some(key)).unwrap();
+            insert_pending_state(test_pending_state(key, &format!("slot-{key}")));
         }
         {
             let guard = PENDING_OAUTH_STATES.lock().expect("lock slots");
-            assert_eq!(guard.len(), 4);
-            for key in test_variant_keys() {
-                let expected = format!("slot-{}", key);
-                assert_eq!(
-                    guard.get(key).map(|s| s.login_id.as_str()),
-                    Some(expected.as_str()),
-                    "variant slot mismatch"
-                );
+            assert_eq!(guard.len(), 2);
+            for key in test_login_keys() {
+                assert_eq!(guard.get(key).unwrap().login_id, format!("slot-{key}"));
             }
         }
-        insert_pending_state(test_pending_state("qoder", "slot-qoder-retry"));
-        assert!(take_pending_state_snapshot("slot-qoder").is_err());
-        let stale_err = take_pending_state_snapshot("slot-qoder").expect_err("stale id rejected");
+        insert_pending_state(test_pending_state("qoder_app", "slot-qoder-app-retry"));
+        let stale_err = take_pending_state_snapshot("slot-qoder_app").expect_err("stale id rejected");
         assert!(stale_err.contains("已变更"));
-        let live = take_pending_state_snapshot("slot-qoder-retry").expect("live snapshot");
-        assert_eq!(live.variant_key, "qoder");
-        assert!(take_pending_state_snapshot("slot-qoder_app").is_ok());
-        assert!(take_pending_state_snapshot("slot-qoder_cn_ide").is_ok());
+        let live = take_pending_state_snapshot("slot-qoder-app-retry").expect("live snapshot");
+        assert_eq!(live.variant_key, "qoder_app");
         assert!(take_pending_state_snapshot("slot-qoder_cn_app").is_ok());
-        for key in test_variant_keys() {
-            let _ = cancel_login_for_variant(None, Some(key));
+        for key in test_login_keys() {
+            cancel_login_for_variant(None, Some(key)).unwrap();
         }
-        assert!(take_pending_state_snapshot("slot-qoder-retry").is_err());
+        assert!(take_pending_state_snapshot("slot-qoder-app-retry").is_err());
     }
 
     #[test]
     fn oauth_cancelled_after_an_earlier_snapshot_cannot_commit() {
         let _serial = SLOT_TEST_SERIAL.lock().expect("serial slot tests");
-        for key in test_variant_keys() {
+        for key in test_login_keys() {
             let id = format!("cancel-before-commit-{key}");
             insert_pending_state(test_pending_state(key, &id));
             assert!(!take_pending_state_snapshot(&id).unwrap().cancelled);
@@ -3412,9 +3379,9 @@ mod tests {
     #[test]
     fn oauth_commit_holds_the_cancel_boundary_and_removes_only_the_completed_session() {
         let _serial = SLOT_TEST_SERIAL.lock().expect("serial slot tests");
-        insert_pending_state(test_pending_state(QODER_VARIANT_QODER, "commit-current"));
-        insert_pending_state(test_pending_state(QODER_VARIANT_QODER_APP, "commit-other"));
-        let committed = commit_active_login("commit-current", QODER_VARIANT_QODER, || {
+        insert_pending_state(test_pending_state(QODER_VARIANT_QODER_APP, "commit-current"));
+        insert_pending_state(test_pending_state(QODER_VARIANT_QODER_CN_APP, "commit-other"));
+        let committed = commit_active_login("commit-current", QODER_VARIANT_QODER_APP, || {
             assert!(
                 matches!(
                     PENDING_OAUTH_STATES.try_lock(),
@@ -3434,9 +3401,9 @@ mod tests {
     #[test]
     fn oauth_failed_commit_keeps_the_live_session_for_retry() {
         let _serial = SLOT_TEST_SERIAL.lock().expect("serial slot tests");
-        insert_pending_state(test_pending_state(QODER_VARIANT_QODER, "failed-commit"));
+        insert_pending_state(test_pending_state(QODER_VARIANT_QODER_APP, "failed-commit"));
         let result: Result<(), String> =
-            commit_active_login("failed-commit", QODER_VARIANT_QODER, || {
+            commit_active_login("failed-commit", QODER_VARIANT_QODER_APP, || {
                 Err("isolated persistence failure".into())
             });
         assert_eq!(result.unwrap_err(), "isolated persistence failure");
@@ -3445,7 +3412,7 @@ mod tests {
     }
 
     #[test]
-    fn qoder_login_slots_header_surface() {
+    fn client_request_headers_preserve_ide_and_app_protocols() {
         let machine = QoderMachineInfo {
             token: "machine-token".to_string(),
             machine_type: Some("machine-type".to_string()),
@@ -3472,13 +3439,14 @@ mod tests {
     }
 
     #[test]
-    fn qoder_login_slots_machine_absent_proceeds_unidentified() {
+    fn client_machine_cache_absence_preserves_variant_directories() {
         let missing = PathBuf::from("/definitely/not/here/qoder-variants-t2");
         assert!(!missing.exists());
         let info = read_machine_info_from_cache_dir(&missing).expect("absent cache is Ok");
         assert!(info.is_none());
 
-        for key in test_variant_keys() {
+        for kind in crate::modules::qoder_variant::all_qoder_variant_kinds() {
+            let key = kind.provider_key();
             let params = resolve_qoder_variant_params(key).expect("params");
             let dir = qoder_user_data_dir_for_variant(&params).expect("user data dir");
             let cache_dir = dir.join("SharedClientCache").join("cache");
@@ -3500,19 +3468,7 @@ mod tests {
     }
 
     #[test]
-    fn qoder_cn_ide_variant_params_passthrough() {
-        let cn_ide = resolve_qoder_variant_params("qoder_cn_ide").expect("cn ide params");
-        assert_eq!(cn_ide.login_base_url, QODER_CN_LOGIN_BASE_URL);
-        assert_eq!(cn_ide.openapi_base_url, QODER_CN_OPENAPI_BASE_URL);
-        assert_eq!(cn_ide.client_id, Some(QODER_DESKTOP_CLIENT_ID));
-        assert!(!cn_ide.is_app_line);
-
-        let intl = resolve_qoder_variant_params("qoder").expect("qoder params");
-        assert_eq!(intl.client_id, Some(QODER_DEVICE_CLIENT_ID));
-    }
-
-    #[test]
-    fn qoder_cn_ide_poll_quad_parse() {
+    fn app_device_login_poll_parses_credentials_and_pending_responses() {
         let happy = r#"{"token":"dt-TEST","user_id":"user-TEST","refresh_token":"drt-TEST","expires_at":"2026-10-24T00:00:00Z","refresh_token_expires_at":"2027-09-24T00:00:00Z"}"#;
         let ready = parse_device_token_poll_response(happy)
             .expect("happy fixture parses")
@@ -4521,12 +4477,36 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn login_entries_use_region_specific_qoder_authorization() {
+    async fn ide_clients_cannot_open_independent_oauth_sessions() {
+        let _serial = SLOT_TEST_SERIAL.lock().unwrap();
+        for key in test_login_keys() {
+            insert_pending_state(test_pending_state(key, &format!("preserved-{key}")));
+        }
+        for key in ["qoder", "qoder_cn_ide"] {
+            let err = start_login_for_variant(key).await.unwrap_err();
+            assert!(err.contains("仅支持 App 授权"));
+            let err = complete_login("unused-login-fixture", key).await.unwrap_err();
+            assert!(err.contains("仅支持 App 授权"));
+            assert!(peek_pending_login_for_variant(key).is_none());
+            assert!(cancel_login_for_variant(None, Some(key)).is_err());
+        }
+        {
+            let states = PENDING_OAUTH_STATES.lock().unwrap();
+            assert_eq!(states.len(), 2);
+            for key in test_login_keys() {
+                assert_eq!(states.get(key).unwrap().login_id, format!("preserved-{key}"));
+            }
+        }
+        for key in test_login_keys() {
+            cancel_login_for_variant(None, Some(key)).unwrap();
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn app_login_entries_use_region_specific_qoder_authorization() {
         let _serial = SLOT_TEST_SERIAL.lock().unwrap();
         for (key, host, redirect) in [
-            ("qoder", "qoder.com", "qoder-work://"),
             ("qoder_app", "qoder.com", "qoder-work://"),
-            ("qoder_cn_ide", "qoder.cn", ""),
             ("qoder_cn_app", "qoder.cn", ""),
         ] {
             let login = start_login_for_variant(key).await.unwrap();
@@ -4565,6 +4545,7 @@ mod tests {
             let machine = Uuid::parse_str(&query["machine_id"]).unwrap();
             assert_ne!(nonce, machine);
             let pending = take_pending_state_snapshot(&login.login_id).unwrap();
+            assert_eq!(pending.variant_key, key);
             assert_eq!(pending.code_verifier.len(), 64);
             assert_eq!(pending.expected_nonce, query["nonce"]);
             assert_eq!(generate_pkce_challenge(&pending.code_verifier), query["challenge"]);

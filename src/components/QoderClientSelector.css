@@ -1,0 +1,50 @@
+.qoder-client-selector {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.qoder-client-option {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.qoder-client-option:hover:not(:disabled),
+.qoder-client-option.is-selected {
+  border-color: color-mix(in srgb, var(--success) 75%, var(--text-primary));
+  background: color-mix(in srgb, var(--success) 10%, var(--bg-secondary));
+}
+
+.qoder-client-option.is-selected {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--success) 75%, var(--text-primary));
+}
+
+.qoder-client-option:focus-visible {
+  outline: 2px solid var(--success);
+  outline-offset: 3px;
+}
+
+.qoder-client-option:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.qoder-client-icon {
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .qoder-client-option { transition: none; }
+}
