@@ -32,7 +32,7 @@ import { useTranslation } from 'react-i18next';
 import { TagEditModal } from '../components/TagEditModal';
 import { QoderBatchClaimModal } from '../components/QoderBatchClaimModal';
 import { QoderClientSelector } from '../components/QoderClientSelector';
-import { QoderIcon } from '../components/icons/QoderIcon';
+import { QoderClientSwitchButton, QoderCurrentClients } from '../components/QoderClientSwitchButton';
 import '../components/QoderBatchClaimModal.css';
 import { useActionBubble } from '../components/ActionBubble';
 import { ExportJsonModal } from '../components/ExportJsonModal';
@@ -277,14 +277,6 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
   const activeVariant = variantId ?? 'qoder';
   const clientVariants = useMemo(() => getQoderClientVariants(activeVariant), [activeVariant]);
   const [ideVariant, appVariant] = clientVariants;
-  const [clientTargets, setClientTargets] = useState<Record<string, QoderVariantId>>({});
-  const resolveClientTarget = useCallback(
-    (accountId: string) => clientTargets[accountId] ?? activeVariant,
-    [activeVariant, clientTargets],
-  );
-  const selectClientTarget = useCallback((accountId: string, target: QoderVariantId) => {
-    setClientTargets((previous) => ({ ...previous, [accountId]: target }));
-  }, []);
   const accountScope = normalizePlatform(activeVariant);
   const filterScope = normalizeAccountsOverviewScope(accountScope);
   const currentIds = useQoderCurrentAccountIds(store.accounts);
@@ -1149,7 +1141,7 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
   );
 
   const handleSwitch = useCallback(
-    async (accountId: string, anchorEl?: HTMLElement | null) => {
+    async (accountId: string, target: QoderVariantId, anchorEl: HTMLButtonElement) => {
       if (injecting === accountId) return;
       const anchor =
         (anchorEl && document.contains(anchorEl))
@@ -1157,7 +1149,6 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
           : (document.getElementById(`qoder-btn-switch-${accountId}`) ??
              document.getElementById(`qoder-list-btn-switch-${accountId}`));
       setInjecting(accountId);
-      const target = resolveClientTarget(accountId);
       try {
         await store.switchAccount(accountId, target);
         showBubble(anchor, t('accounts.switchSuccess', '切换成功'), 'success');
@@ -1173,7 +1164,7 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
         setInjecting(null);
       }
     },
-    [resolveClientTarget, injecting, showBubble, store, t],
+    [injecting, showBubble, store, t],
   );
 
   const handleDeleteAccounts = useCallback(
@@ -1904,8 +1895,6 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
         const createdAtText = formatDateTime(account.created_at);
         const isRefreshing = refreshing === account.id;
         const isInjecting = injecting === account.id;
-        const switchTarget = resolveClientTarget(account.id);
-        const switchTitle = t('qoder.suite.switchToClient', '切换到 {{client}}', { client: QODER_VARIANT_DISPLAY_NAMES[switchTarget] });
         const quotaError = account.quota_query_last_error?.trim();
         const rewardStatus = resolveQoderRewardStatus(account, rewardNow);
         const rewardActionTitle = rewardStatus === 'claimed'
@@ -1971,12 +1960,8 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
               <span className="kiro-table-subline" title={createdAtText}>
                 {updatedText}
               </span>
-              <QoderClientSelector
-                value={switchTarget}
-                currentVariants={clientVariants.filter((variant) => currentIds[variant] === account.id)}
-                onChange={(target) => selectClientTarget(account.id, target)}
-                label={t('qoder.suite.switchTarget', '换号目标')}
-                disabled={isInjecting || deleting}
+              <QoderCurrentClients
+                variants={clientVariants.filter((variant) => currentIds[variant] === account.id)}
               />
             </div>
 
@@ -1998,18 +1983,14 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
                 {updatedText}
               </span>
               <div className="card-actions">
-                <button
+                <QoderClientSwitchButton
                   id={`qoder-btn-switch-${account.id}`}
                   className="card-action-btn success"
-                  onClick={(e) => void handleSwitch(account.id, e.currentTarget)}
-                  title={switchTitle}
-                  aria-label={switchTitle}
-                  disabled={isInjecting || deleting}
-                >
-                  {isInjecting
-                    ? <RotateCw size={14} className="loading-spinner" />
-                    : <QoderIcon variant={switchTarget} className="qoder-client-icon" />}
-                </button>
+                  variant={activeVariant}
+                  busy={isInjecting}
+                  disabled={deleting}
+                  onSwitch={(target, anchor) => void handleSwitch(account.id, target, anchor)}
+                />
                 <button
                   id={`qoder-btn-reward-${account.id}`}
                   className={`card-action-btn reward-btn ${
@@ -2076,6 +2057,7 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
       }),
     [
       claimingRewardIds,
+      activeVariant,
       clientVariants,
       currentAccountIds,
       currentIds,
@@ -2091,8 +2073,6 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
       maskAccountText,
       refreshing,
       renderQuotaSection,
-      resolveClientTarget,
-      selectClientTarget,
       resolveUpdatedText,
       rewardNow,
       selected,
@@ -2111,8 +2091,6 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
         const isSelected = selected.has(account.id);
         const isRefreshing = refreshing === account.id;
         const isInjecting = injecting === account.id;
-        const switchTarget = resolveClientTarget(account.id);
-        const switchTitle = t('qoder.suite.switchToClient', '切换到 {{client}}', { client: QODER_VARIANT_DISPLAY_NAMES[switchTarget] });
         const quotaError = account.quota_query_last_error?.trim();
         const rewardStatus = resolveQoderRewardStatus(account, rewardNow);
         const rewardActionTitle = rewardStatus === 'claimed'
@@ -2161,12 +2139,8 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
                     </span>
                   )}
                 </div>
-                <QoderClientSelector
-                  value={switchTarget}
-                  currentVariants={clientVariants.filter((variant) => currentIds[variant] === account.id)}
-                  onChange={(target) => selectClientTarget(account.id, target)}
-                  label={t('qoder.suite.switchTarget', '换号目标')}
-                  disabled={isInjecting || deleting}
+                <QoderCurrentClients
+                  variants={clientVariants.filter((variant) => currentIds[variant] === account.id)}
                 />
                 {quotaError && (
                   <div className="account-sub-line">
@@ -2231,18 +2205,14 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
                 >
                   <RefreshCw size={14} className={isRefreshing ? 'loading-spinner' : ''} />
                 </button>
-                <button
+                <QoderClientSwitchButton
                   id={`qoder-list-btn-switch-${account.id}`}
                   className="action-btn"
-                  onClick={(e) => void handleSwitch(account.id, e.currentTarget)}
-                  title={switchTitle}
-                  aria-label={switchTitle}
-                  disabled={isInjecting || deleting}
-                >
-                  {isInjecting
-                    ? <RotateCw size={14} className="loading-spinner" />
-                    : <QoderIcon variant={switchTarget} className="qoder-client-icon" />}
-                </button>
+                  variant={activeVariant}
+                  busy={isInjecting}
+                  disabled={deleting}
+                  onSwitch={(target, anchor) => void handleSwitch(account.id, target, anchor)}
+                />
                 <button
                   id={`qoder-list-btn-reward-${account.id}`}
                   className={`action-btn reward-btn ${
@@ -2300,6 +2270,7 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
       }),
     [
       claimingRewardIds,
+      activeVariant,
       clientVariants,
       currentAccountIds,
       currentIds,
@@ -2315,8 +2286,6 @@ export function QoderAccountsPage({ variantId }: { variantId?: QoderVariantId } 
       maskAccountText,
       refreshing,
       resolveQuotaDisplay,
-      resolveClientTarget,
-      selectClientTarget,
       rewardNow,
       selected,
       t,

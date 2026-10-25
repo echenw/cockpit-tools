@@ -1345,7 +1345,7 @@
   flex-wrap: wrap;
 }
 
-.qoder-accounts-page .qoder-account-subline .qoder-client-selector {
+.qoder-accounts-page .qoder-account-subline .qoder-current-clients {
   margin-left: auto;
 }
 

@@ -48,7 +48,7 @@ for (const [ide, app, scope] of [
     assert.equal(h.storage.get(`${base(app)}.tag_filter`), '["kept-app-tag"]', 'source preferences stay intact');
     h.api.setAccountsOverviewFilterPersistenceEnabled(app, false);
     assert.equal(h.api.readAccountsOverviewFilterPersistenceEnabled(ide), false);
-    assert.equal(h.events.at(-1)?.scope, scope);
+    assert.equal(h.events[h.events.length - 1]?.scope, scope);
     assert.equal(h.api.resolveAccountsOverviewScopeFromQuickSettingsType(app), scope);
     assert.equal(h.api.normalizeAccountsOverviewScope(ide), scope);
     assert.equal(h.api.readAccountsOverviewFilterField(scope === 'qoder_intl' ? 'qoder_cn_app' : 'qoder_app', 'view_mode', 'grid'), 'grid');
