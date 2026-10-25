@@ -1819,7 +1819,16 @@ fn json_as_f64(value: &serde_json::Value) -> Option<f64> {
 
 #[cfg(not(target_os = "macos"))]
 fn build_qoder_display_info(lang: &str, platform: PlatformId) -> AccountDisplayInfo {
-    let accounts = crate::modules::qoder_account::list_accounts();
+    let accounts = match crate::modules::qoder_account::list_accounts_checked() {
+        Ok(accounts) => accounts,
+        Err(error) => {
+            crate::modules::logger::log_warn(&format!("[Qoder Tray] 读取账号失败，保留当前账号映射: {error}"));
+            return AccountDisplayInfo {
+                account: format!("⚠ {}", platform.title()),
+                quota_lines: vec![error],
+            };
+        }
+    };
     let account = resolve_qoder_current_account(&accounts, platform);
 
     let Some(account) = account else {

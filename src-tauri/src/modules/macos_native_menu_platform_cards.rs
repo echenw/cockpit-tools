@@ -1664,7 +1664,13 @@
         lang: &str,
         platform: PlatformId,
     ) -> (Vec<AccountCard>, Option<String>, Option<String>) {
-        let mut accounts = modules::qoder_account::list_accounts();
+        let mut accounts = match modules::qoder_account::list_accounts_checked() {
+            Ok(accounts) => accounts,
+            Err(error) => {
+                modules::logger::log_warn(&format!("[Qoder Menu] 读取账号失败，保留当前账号映射: {error}"));
+                return (Vec::new(), None, None);
+            }
+        };
         let current_id = modules::qoder_variant::QoderVariantKind::parse(Some(platform.as_str()))
             .ok()
             .and_then(|kind| {

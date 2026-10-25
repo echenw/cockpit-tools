@@ -3711,8 +3711,18 @@ fn is_helper_command_line(cmdline_lower: &str) -> bool {
         || cmdline_lower.contains("/resources/app/extensions/")
 }
 
-#[cfg(any(target_os = "linux", test))]
-fn is_linux_chromium_helper_tokens(tokens: &[String]) -> bool {
+#[cfg(any(target_os = "windows", test))]
+fn is_named_electron_helper_process(tokens: &[String], strict: bool) -> bool {
+    if strict {
+        // Qoder profiles and executable paths may contain helper-related words.
+        // Only Chromium's actual process-role flags identify a child process.
+        return is_chromium_helper_tokens(tokens);
+    }
+    let command_line = tokens.join(" ").to_ascii_lowercase();
+    is_helper_command_line(&command_line) || command_line.contains("crashpad_handler")
+}
+
+fn is_chromium_helper_tokens(tokens: &[String]) -> bool {
     for token in tokens {
         let token = token.to_ascii_lowercase();
         if token.starts_with("--type=")
@@ -3873,10 +3883,9 @@ fn is_linux_antigravity_process_candidate_from_tokens(
     {
         return false;
     }
-    !is_linux_chromium_helper_tokens(tokens)
+    !is_chromium_helper_tokens(tokens)
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows", test))]
 fn extract_user_data_dir_from_tokens(tokens: &[String]) -> Option<String> {
     let mut index = 0;
     while index < tokens.len() {
