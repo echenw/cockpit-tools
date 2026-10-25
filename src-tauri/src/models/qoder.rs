@@ -78,16 +78,16 @@ pub struct QoderAccount {
     // 最近更新的客户端凭据来源；账号归属按该变体的地区判断。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variant: Option<String>,
-    /// 地区账号唯一的 device RT；客户端投影不另存 device RT。
+    /// 当前来源客户端的 device RT（保留旧存储字段名）；其他客户端在 client_auth 中各存自己的 RT。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shared_refresh_token: Option<String>,
-    /// 当前来源 IDE 已确认持有该授权；OAuth/后台轮换后须重新交接。
+    /// 默认 IDE 已确认持有其客户端授权；该 IDE 重新授权/后台轮换后须重新交接。
     #[serde(default, skip_serializing_if = "is_false")]
     pub native_ide_session: bool,
     /// 本机实例目录 -> 注入时授权摘要；None 表示已撤销、仍待停止的交接。不是另一份 RT。
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub native_ide_instances: std::collections::HashMap<String, Option<String>>,
-    /// 其他客户端的 AT / job 凭据投影；当前来源的投影是 auth_user_info_raw。
+    /// 其他客户端各自的 AT、device RT 和 App job 凭据；当前来源保存在 auth_user_info_raw。
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub client_auth: std::collections::HashMap<String, Value>,
     /// 合并前的账号 ID，供现有实例绑定和当前账号引用解析。
