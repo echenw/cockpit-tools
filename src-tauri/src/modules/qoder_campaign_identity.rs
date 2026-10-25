@@ -1,5 +1,5 @@
-//! Qoder OAuth Owner 的国际活动身份；协议与 cpa-workbuddy-plugin@806c61f/qoder-ai 对齐。
-//! 身份按官方用户 ID 获取和缓存，查询与领取复用，不读取官方客户端的机器 ID 或登录文件。
+//! Qoder OAuth Owner 的地区活动身份：国际版使用参考 UMID 协议，国内版使用官方 CN 桥接工具。
+//! 身份按地区和用户 ID 缓存，查询与领取复用，不读取或改写官方客户端登录文件。
 
 use super::{normalize_non_empty, QoderMachineInfo, QoderVariantParams};
 use crate::models::qoder::QoderAccount;
@@ -7,14 +7,22 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+#[path = "qoder_cn_campaign_identity.rs"]
+mod cn;
 #[path = "qoder_umid_codec.rs"]
 mod codec;
 
 const IDENTITY_TTL: Duration = Duration::from_secs(12 * 60 * 60);
+const CN_IDENTITY_TTL: Duration = Duration::from_secs(60 * 60);
 const UMID_TIMEOUT: Duration = Duration::from_secs(8);
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 const MAX_CACHED_IDENTITIES: usize = 256;
 pub(super) const CAMPAIGN_CLIENT_VERSION: &str = "0.4.3";
+
+pub(super) fn cn_machine_id() -> Result<String, String> {
+    cn::machine_id()
+}
+
 // The reference protocol uses HTTP. Its fixed-key codec does not authenticate
 // the server or protect transport integrity; a supported HTTPS endpoint is unconfirmed.
 const UMID_ENDPOINT: &str = "http://us-pum.alibabachengdun.com/repPc.json?e=1000&pn=runtime-info-linux&os=8&sv=1.5.0&pv=NA&pt=1";
@@ -22,10 +30,11 @@ const UMID_USER_AGENT: &str = "Mozilla/5.0 (Windows; U; Windows NT 5.1; zh-CN; r
 
 struct CachedIdentity {
     acquired_at: Instant,
+    ttl: Duration,
     info: QoderMachineInfo,
 }
 
-// 同一 Owner 串行取得身份，避免并发的首次查询与领取使用不同响应。
+// 查询与领取由调用方的账号锁串行化；此锁只保护缓存读写，不跨工具或网络等待。
 // 这里只缓存设备身份，AT/RT 始终由账号 Owner 管理。
 static IDENTITIES: std::sync::LazyLock<tokio::sync::Mutex<HashMap<String, CachedIdentity>>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(HashMap::new()));
@@ -102,23 +111,49 @@ async fn acquire_identity(uid: &str) -> Result<QoderMachineInfo, String> {
 pub(super) async fn resolve(
     params: &QoderVariantParams,
     account: &QoderAccount,
-) -> Result<Option<QoderMachineInfo>, String> {
-    // CN 活动保持其现有请求契约；本模块对齐 qoder-ai 国际活动协议。
-    if params.kind.is_cn() {
-        return Ok(None);
-    }
+) -> Result<QoderMachineInfo, String> {
+    resolve_with(params, account, |uid| async move {
+        if params.kind.is_cn() {
+            Ok(cn::acquire(&uid).await)
+        } else {
+            acquire_identity(&uid).await
+        }
+    })
+    .await
+}
+
+async fn resolve_with<F, Fut>(
+    params: &QoderVariantParams,
+    account: &QoderAccount,
+    acquire: F,
+) -> Result<QoderMachineInfo, String>
+where
+    F: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = Result<QoderMachineInfo, String>>,
+{
     let uid = account
         .user_id
         .as_deref()
         .and_then(|value| normalize_non_empty(Some(value)))
         .ok_or("Qoder 活动请求缺少已确认的用户 ID")?;
     let key = format!("{}:{}", params.site, uid);
-    let mut cache = IDENTITIES.lock().await;
-    cache.retain(|_, identity| identity.acquired_at.elapsed() < IDENTITY_TTL);
-    if let Some(identity) = cache.get(&key) {
-        return Ok(Some(identity.info.clone()));
+    {
+        let mut cache = IDENTITIES.lock().await;
+        cache.retain(|_, identity| identity.acquired_at.elapsed() < identity.ttl);
+        if let Some(identity) = cache.get(&key) {
+            return Ok(identity.info.clone());
+        }
     }
-    let info = acquire_identity(&uid).await?;
+    let info = acquire(uid).await?;
+    // 官方 CN 工具是可选能力；失败时保留基础请求头，后续请求仍可重新尝试工具。
+    if params.kind.is_cn() && info.token.is_empty() {
+        return Ok(info);
+    }
+    let mut cache = IDENTITIES.lock().await;
+    cache.retain(|_, identity| identity.acquired_at.elapsed() < identity.ttl);
+    if let Some(identity) = cache.get(&key) {
+        return Ok(identity.info.clone());
+    }
     if cache.len() >= MAX_CACHED_IDENTITIES {
         if let Some(oldest) = cache
             .iter()
@@ -132,10 +167,15 @@ pub(super) async fn resolve(
         key,
         CachedIdentity {
             acquired_at: Instant::now(),
+            ttl: if params.kind.is_cn() {
+                CN_IDENTITY_TTL
+            } else {
+                IDENTITY_TTL
+            },
             info: info.clone(),
         },
     );
-    Ok(Some(info))
+    Ok(info)
 }
 
 #[cfg(test)]
@@ -149,6 +189,115 @@ mod tests {
             "variant": "qoder_app", "created_at": 0, "last_used": 0, "user_id": uid,
         }))
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn pending_cn_campaign_identity_does_not_block_a_cached_international_account() {
+        use std::future::{poll_fn, Future};
+        use std::task::Poll;
+
+        let uid = format!("fixture-concurrent-{}", uuid::Uuid::new_v4());
+        let target = account(Some(&uid));
+        let cn_params = resolve_qoder_variant_params("qoder_cn_app").unwrap();
+        let intl_params = resolve_qoder_variant_params("qoder_app").unwrap();
+        let info = QoderMachineInfo {
+            token: "fixture-intl-token".into(),
+            machine_type: None,
+            machine_code: None,
+            machine_id: None,
+            machine_hostname: None,
+            machine_os: None,
+            cosy_version: None,
+        };
+        let key = format!("intl:{uid}");
+        IDENTITIES.lock().await.insert(
+            key.clone(),
+            CachedIdentity {
+                acquired_at: Instant::now(),
+                ttl: IDENTITY_TTL,
+                info,
+            },
+        );
+        let release = tokio::sync::Notify::new();
+        let mut pending_cn = Box::pin(resolve_with(&cn_params, &target, |_| async {
+            release.notified().await;
+            Err("fixture CN SDK stopped".into())
+        }));
+        poll_fn(|cx| {
+            assert!(pending_cn.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+
+        let cached =
+            tokio::time::timeout(Duration::from_secs(1), resolve(&intl_params, &target)).await;
+        // Always release the controlled SDK before asserting, including on a regression.
+        release.notify_one();
+        assert!(pending_cn.await.is_err());
+        IDENTITIES.lock().await.remove(&key);
+        assert_eq!(
+            cached
+                .expect("pending CN SDK must not block an international cache hit")
+                .unwrap()
+                .token,
+            "fixture-intl-token"
+        );
+    }
+
+    #[tokio::test]
+    async fn cn_campaigns_retry_optional_identity_while_international_errors_stay_errors() {
+        let uid = format!("fixture-retry-{}", uuid::Uuid::new_v4());
+        let target = account(Some(&uid));
+        let cn = resolve_qoder_variant_params("qoder_cn_app").unwrap();
+        let intl = resolve_qoder_variant_params("qoder_app").unwrap();
+        let base = QoderMachineInfo {
+            token: String::new(),
+            machine_type: None,
+            machine_code: None,
+            machine_id: Some("fixture-stable-id".into()),
+            machine_hostname: None,
+            machine_os: Some("aarch64_darwin".into()),
+            cosy_version: Some("0.4.3".into()),
+        };
+        let partial = resolve_with(&cn, &target, |_| async { Ok(base.clone()) })
+            .await
+            .unwrap();
+        assert!(
+            partial.token.is_empty(),
+            "CN requests may continue without a native token"
+        );
+        let complete = QoderMachineInfo {
+            token: "fixture-recovered-token".into(),
+            ..base
+        };
+        let recovered = resolve_with(&cn, &target, |_| async { Ok(complete) })
+            .await
+            .unwrap();
+        assert_eq!(
+            recovered.token, "fixture-recovered-token",
+            "optional failures must not be cached"
+        );
+        let ide = resolve_qoder_variant_params("qoder_cn_ide").unwrap();
+        assert_eq!(
+            resolve_with(&ide, &target, |_| async {
+                panic!("query and claim must reuse the regional account identity");
+            })
+            .await
+            .unwrap()
+            .token,
+            recovered.token
+        );
+        assert_eq!(
+            resolve_with(&intl, &target, |_| async {
+                Err("fixture UMID failure".into())
+            })
+            .await
+            .unwrap_err(),
+            "fixture UMID failure"
+        );
+        let mut cache = IDENTITIES.lock().await;
+        assert!(!cache.contains_key(&format!("intl:{uid}")));
+        cache.remove(&format!("cn:{uid}"));
     }
 
     #[test]
@@ -208,15 +357,13 @@ mod tests {
             key.clone(),
             CachedIdentity {
                 acquired_at: Instant::now(),
+                ttl: IDENTITY_TTL,
                 info: info.clone(),
             },
         );
         for variant in ["qoder", "qoder_app"] {
             let params = resolve_qoder_variant_params(variant).unwrap();
-            let resolved = resolve(&params, &account(Some(&uid)))
-                .await
-                .unwrap()
-                .unwrap();
+            let resolved = resolve(&params, &account(Some(&uid))).await.unwrap();
             assert_eq!(resolved.machine_id, info.machine_id);
             assert_eq!(resolved.token, info.token);
             assert_eq!(resolved.machine_os.as_deref(), Some("x86_64_linux"));
@@ -225,15 +372,63 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_uid_fails_before_network_and_cn_needs_no_umid() {
-        let intl = resolve_qoder_variant_params("qoder_app").unwrap();
-        assert!(resolve(&intl, &account(None))
-            .await
-            .unwrap_err()
-            .contains("用户 ID"));
-        for variant in ["qoder_cn_app", "qoder_cn_ide"] {
-            let cn = resolve_qoder_variant_params(variant).unwrap();
-            assert!(resolve(&cn, &account(None)).await.unwrap().is_none());
+    async fn missing_uid_fails_before_external_identity_acquisition_in_every_region() {
+        for variant in ["qoder", "qoder_app", "qoder_cn_app", "qoder_cn_ide"] {
+            let params = resolve_qoder_variant_params(variant).unwrap();
+            assert!(resolve(&params, &account(None))
+                .await
+                .unwrap_err()
+                .contains("用户 ID"));
         }
+    }
+
+    #[tokio::test]
+    async fn cn_clients_reuse_their_accounts_identity_without_using_the_international_cache() {
+        let uid = format!("fixture-{}", uuid::Uuid::new_v4());
+        let make_identity = |token: &str, os: &str| QoderMachineInfo {
+            token: token.into(),
+            machine_type: Some("fixture-type".into()),
+            machine_code: Some("fixture-code".into()),
+            machine_id: Some(uuid::Uuid::new_v4().to_string()),
+            machine_hostname: Some("fixture-host".into()),
+            machine_os: Some(os.into()),
+            cosy_version: Some(CAMPAIGN_CLIENT_VERSION.into()),
+        };
+        for (site, token, os) in [
+            ("cn", "fixture-cn-token", "aarch64_darwin"),
+            ("intl", "fixture-intl-token", "x86_64_linux"),
+        ] {
+            IDENTITIES.lock().await.insert(
+                format!("{site}:{uid}"),
+                CachedIdentity {
+                    acquired_at: Instant::now(),
+                    ttl: CN_IDENTITY_TTL,
+                    info: make_identity(token, os),
+                },
+            );
+        }
+        for variant in ["qoder_cn_app", "qoder_cn_ide", "qoder_app", "qoder"] {
+            let params = resolve_qoder_variant_params(variant).unwrap();
+            let identity = resolve(&params, &account(Some(&uid))).await.unwrap();
+            assert_eq!(
+                identity.token,
+                if params.kind.is_cn() {
+                    "fixture-cn-token"
+                } else {
+                    "fixture-intl-token"
+                }
+            );
+            assert_eq!(
+                identity.machine_os.as_deref(),
+                Some(if params.kind.is_cn() {
+                    "aarch64_darwin"
+                } else {
+                    "x86_64_linux"
+                })
+            );
+        }
+        let mut cache = IDENTITIES.lock().await;
+        cache.remove(&format!("cn:{uid}"));
+        cache.remove(&format!("intl:{uid}"));
     }
 }

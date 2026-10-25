@@ -1561,7 +1561,7 @@ fn resolve_qoder_variant_custom_exec_path(
     }
 }
 
-fn resolve_qoder_variant_launch_path(
+pub(crate) fn resolve_qoder_variant_launch_path(
     kind: crate::modules::qoder_variant::QoderVariantKind,
 ) -> Result<std::path::PathBuf, String> {
     let current = config::get_user_config();

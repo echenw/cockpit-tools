@@ -2177,11 +2177,11 @@ pub async fn start_login_for_variant(
 ) -> Result<QoderOAuthStartResponse, String> {
     let params = resolve_app_login_params(variant_key)?;
     let expected_nonce = Uuid::new_v4().to_string();
-    let machine_uuid = Uuid::new_v4();
     let machine_id = if params.kind.is_cn() {
-        machine_uuid.simple().to_string()
+        // 与官方 CN 一致：授权和活动请求共用稳定的本机 ID；nonce/PKCE 每次独立生成。
+        campaign_identity::cn_machine_id()?
     } else {
-        machine_uuid.to_string()
+        Uuid::new_v4().to_string()
     };
     let code_verifier = generate_pkce_verifier();
     let verification_uri = build_device_login_url(
@@ -2415,35 +2415,29 @@ pub fn cancel_login_for_variant(
 }
 
 fn build_qoder_claim_headers(
-    kind: QoderVariantKind,
     token: &str,
-    machine_info: Option<&QoderMachineInfo>,
+    machine: &QoderMachineInfo,
 ) -> reqwest::header::HeaderMap {
     use reqwest::header::{HeaderName, HeaderValue, CONTENT_TYPE};
-    // 两地区共用 Bearer + ClientType:10 + UA:Qoder。CN 不要求设备头；
-    // Intl 使用参考 qoder-ai 的按账号 UMID 身份；不复用本机 App 的硬件身份。
+    // 两地区共用活动请求头；CN 工具不可用时仍携带基础信息，省略未取得的设备字段。
     let mut headers = build_qoder_app_usage_headers(token);
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    if !kind.is_cn() {
-        headers.insert(
-            HeaderName::from_static("cosy-version"),
-            HeaderValue::from_static(campaign_identity::CAMPAIGN_CLIENT_VERSION),
-        );
-        if let Some(machine) = machine_info {
-            for (name, value) in [
-                ("cosy-version", machine.cosy_version.as_deref()),
-                ("cosy-machinetoken", Some(machine.token.as_str())),
-                ("cosy-machinetype", machine.machine_type.as_deref()),
-                ("cosy-machinecode", machine.machine_code.as_deref()),
-                ("cosy-machineid", machine.machine_id.as_deref()),
-                ("cosy-machinehostname", machine.machine_hostname.as_deref()),
-                ("cosy-machineos", machine.machine_os.as_deref()),
-            ] {
-                if let Some(value) = value.and_then(|value| normalize_non_empty(Some(value))) {
-                    if let Ok(value) = HeaderValue::from_str(&value) {
-                        headers.insert(HeaderName::from_static(name), value);
-                    }
-                }
+    headers.insert(
+        HeaderName::from_static("cosy-version"),
+        HeaderValue::from_static(campaign_identity::CAMPAIGN_CLIENT_VERSION),
+    );
+    for (name, value) in [
+        ("cosy-version", machine.cosy_version.as_deref()),
+        ("cosy-machinetoken", Some(machine.token.as_str())),
+        ("cosy-machinetype", machine.machine_type.as_deref()),
+        ("cosy-machinecode", machine.machine_code.as_deref()),
+        ("cosy-machineid", machine.machine_id.as_deref()),
+        ("cosy-machinehostname", machine.machine_hostname.as_deref()),
+        ("cosy-machineos", machine.machine_os.as_deref()),
+    ] {
+        if let Some(value) = value.and_then(|value| normalize_non_empty(Some(value))) {
+            if let Ok(value) = HeaderValue::from_str(&value) {
+                headers.insert(HeaderName::from_static(name), value);
             }
         }
     }
@@ -2612,7 +2606,7 @@ pub async fn claim_daily_reward(account_id: &str) -> Result<QoderClaimRewardResu
 
     let client = build_reqwest_client()?;
     let machine_info = campaign_identity::resolve(&params, &target).await?;
-    let headers = build_qoder_claim_headers(kind, &access_token, machine_info.as_ref());
+    let headers = build_qoder_claim_headers(&access_token, &machine_info);
 
     let campaigns_url = format!("{}/sash/api/v1/me/campaigns", params.openapi_base_url.trim_end_matches('/'));
     let campaigns_resp = client
@@ -2784,7 +2778,7 @@ async fn fetch_campaign_status(target: &QoderAccount) -> Result<(Option<String>,
 
     let client = build_reqwest_client()?;
     let machine_info = campaign_identity::resolve(&params, &target).await?;
-    let headers = build_qoder_claim_headers(kind, &access_token, machine_info.as_ref());
+    let headers = build_qoder_claim_headers(&access_token, &machine_info);
 
     let campaigns_url = format!("{}/sash/api/v1/me/campaigns", params.openapi_base_url.trim_end_matches('/'));
     let campaigns_resp = client
@@ -4577,39 +4571,78 @@ mod tests {
 
     #[test]
     fn qoder_claim_headers_match_reference_client() {
-        for kind in [QoderVariantKind::Qoder, QoderVariantKind::QoderCnApp] {
-            let headers = build_qoder_claim_headers(kind, "dt-SYNTH-TOKEN-123", None);
-            assert_eq!(headers["authorization"], "Bearer dt-SYNTH-TOKEN-123");
-            assert_eq!(headers["cosy-clienttype"], "10");
-            assert_eq!(headers["user-agent"], "Qoder");
-            assert_eq!(headers["content-type"], "application/json");
-            assert!(!headers.contains_key("origin"));
-            assert!(!headers.contains_key("referer"));
-            assert!(!headers.contains_key("cosy-machinetoken"));
-            if !kind.is_cn() { assert_eq!(headers["cosy-version"], "0.4.3"); }
-        }
+        let machine = QoderMachineInfo {
+            token: "fixture-machine-token".into(), machine_type: None, machine_code: None,
+            machine_id: None, machine_hostname: None, machine_os: None, cosy_version: None,
+        };
+        let headers = build_qoder_claim_headers("dt-SYNTH-TOKEN-123", &machine);
+        assert_eq!(headers["authorization"], "Bearer dt-SYNTH-TOKEN-123");
+        assert_eq!(headers["cosy-clienttype"], "10");
+        assert_eq!(headers["user-agent"], "Qoder");
+        assert_eq!(headers["content-type"], "application/json");
+        assert!(!headers.contains_key("origin"));
+        assert!(!headers.contains_key("referer"));
+        assert_eq!(headers["cosy-machinetoken"], "fixture-machine-token");
+        assert_eq!(headers["cosy-version"], "0.4.3");
     }
 
     #[test]
-    fn international_campaign_headers_include_real_identity_tuple() {
+    fn campaign_headers_include_regional_identity_tuples() {
         let machine = QoderMachineInfo {
             token: "fixture-native-token".into(), machine_type: Some("fixture-native-type".into()),
             machine_code: Some("fixture-native-code".into()), machine_id: Some("fixture-machine-id".into()),
             machine_hostname: Some("fixture-host".into()), machine_os: Some("aarch64_darwin".into()),
             cosy_version: Some("0.4.3".into()),
         };
-        for kind in [QoderVariantKind::Qoder, QoderVariantKind::QoderApp] {
-            let headers = build_qoder_claim_headers(kind, "dt-fixture", Some(&machine));
-            for (key, value) in [
-                ("cosy-machinetoken", "fixture-native-token"),
-                ("cosy-machinetype", "fixture-native-type"),
-                ("cosy-machinecode", "fixture-native-code"),
-                ("cosy-machineid", "fixture-machine-id"),
-                ("cosy-machinehostname", "fixture-host"),
-                ("cosy-machineos", "aarch64_darwin"),
-                ("cosy-version", "0.4.3"), ("cosy-clienttype", "10"), ("user-agent", "Qoder"),
-            ] { assert_eq!(headers[key], value, "{key}"); }
+        let headers = build_qoder_claim_headers("dt-fixture", &machine);
+        for (key, value) in [
+            ("cosy-machinetoken", "fixture-native-token"),
+            ("cosy-machinetype", "fixture-native-type"),
+            ("cosy-machinecode", "fixture-native-code"),
+            ("cosy-machineid", "fixture-machine-id"),
+            ("cosy-machinehostname", "fixture-host"),
+            ("cosy-machineos", "aarch64_darwin"),
+            ("cosy-version", "0.4.3"), ("cosy-clienttype", "10"), ("user-agent", "Qoder"),
+        ] { assert_eq!(headers[key], value, "{key}"); }
+    }
+
+    /// Explicit opt-in: reads one real CN grant and queries campaigns with and without
+    /// the official identity. Never rotates credentials, claims credits or logs raw responses.
+    #[tokio::test]
+    #[ignore = "requires an explicitly selected real CN account and official runtime-info"]
+    async fn cn_campaign_identity_live_comparison() -> Result<(), String> {
+        let account_id = std::env::var("COCKPIT_QODER_CN_DIAGNOSTIC_ACCOUNT_ID")
+            .map_err(|_| "请明确选择需要对照的国内账号".to_string())?;
+        let lock = account_refresh_lock(&account_id)?;
+        let _guard = lock.lock().await;
+        let saved = qoder_account::load_account(&account_id).ok_or("对照账号不存在")?;
+        let kind = qoder_account::account_variant_kind(&saved)?;
+        if !kind.is_cn() { return Err("对照仅支持国内账号".into()); }
+        let target = qoder_account::account_for_variant(&saved, kind.app_variant())?;
+        let params = resolve_qoder_variant_params(kind.app_variant().provider_key())?;
+        let token = extract_access_token_from_account(&target).ok_or("对照账号缺少有效凭证")?;
+        let client = build_reqwest_client()?;
+        let url = format!("{}/sash/api/v1/me/campaigns", params.openapi_base_url);
+        let identity = campaign_identity::resolve(&params, &target).await?;
+        let mut baseline = build_qoder_app_usage_headers(&token);
+        baseline.insert(reqwest::header::CONTENT_TYPE, reqwest::header::HeaderValue::from_static("application/json"));
+        for (label, headers) in [("before", baseline), ("after", build_qoder_claim_headers(&token, &identity))] {
+            let response = client.get(&url).headers(headers).send().await
+                .map_err(|error| format!("活动对照网络错误: {}", error.without_url()))?;
+            let status = response.status();
+            if !status.is_success() { return Err(format!("活动对照 {label}: HTTP {status}")); }
+            let body: Value = response.json().await.map_err(|_| "活动对照响应格式无效")?;
+            let campaigns = body.get("campaigns").and_then(Value::as_array).ok_or("活动对照缺少列表")?;
+            let selected = select_unique_100_campaign(campaigns)?;
+            let claim_status = match selected.and_then(|campaign| campaign["claimStatus"].as_str()) {
+                Some("CLAIMABLE") => "CLAIMABLE", Some("UNCLAIMED") => "UNCLAIMED",
+                Some("CLAIMED") => "CLAIMED", Some("BLOCKED") => "BLOCKED",
+                Some(_) => "OTHER", None => "NONE",
+            };
+            println!("CN_CAMPAIGN_COMPARISON {label}: http={} campaigns={} daily_100={} claim_status={}",
+                status.as_u16(), campaigns.len(), selected.is_some(), claim_status);
         }
+        Ok(())
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -4640,6 +4673,20 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn app_login_entries_use_region_specific_qoder_authorization() {
+        let _env = crate::modules::test_support::env_lock().lock().unwrap();
+        let dir = std::env::temp_dir().join(format!("qoder-login-machine-{}", Uuid::new_v4()));
+        struct Restore { previous: Option<std::ffi::OsString>, dir: PathBuf }
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                match &self.previous {
+                    Some(previous) => std::env::set_var("COCKPIT_TOOLS_TEST_DATA_DIR", previous),
+                    None => std::env::remove_var("COCKPIT_TOOLS_TEST_DATA_DIR"),
+                }
+                let _ = std::fs::remove_dir_all(&self.dir);
+            }
+        }
+        let _restore = Restore { previous: std::env::var_os("COCKPIT_TOOLS_TEST_DATA_DIR"), dir: dir.clone() };
+        std::env::set_var("COCKPIT_TOOLS_TEST_DATA_DIR", &dir);
         let _serial = SLOT_TEST_SERIAL.lock().unwrap();
         for (key, host, redirect) in [
             ("qoder_app", "qoder.com", "qoder-work://"),
@@ -4669,8 +4716,8 @@ mod tests {
                 assert_eq!(query.len(), 5);
                 assert_eq!(query["client_id"], "732aef47-9cf2-46a2-95fe-4cebb5d0d1fa");
                 assert!(!query.contains_key("redirect_uri"));
-                assert_eq!(query["machine_id"].len(), 32);
-                assert!(query["machine_id"].bytes().all(|byte| byte.is_ascii_hexdigit()));
+                assert_eq!(query["machine_id"].len(), 36);
+                assert_eq!(query["machine_id"], campaign_identity::cn_machine_id().unwrap());
             } else {
                 assert_eq!(query.len(), 6);
                 assert_eq!(query["client_id"], "1c5e33e1-364d-4ce6-b02c-acaa81274a5c");
@@ -4690,6 +4737,17 @@ mod tests {
             } else { "https://openapi.qoder.sh" });
             assert!(cancel_login_for_variant(Some(&login.login_id), Some(key)).is_ok());
             assert!(take_pending_state_snapshot(&login.login_id).is_err());
+            if cn {
+                let next = start_login_for_variant(key).await.unwrap();
+                let wrapper = Url::parse(&next.verification_uri).unwrap();
+                let callback = wrapper.query_pairs().find(|(key, _)| key == "oauth_callback").unwrap().1.into_owned();
+                let inner = Url::parse(&callback).unwrap();
+                let next_query: std::collections::BTreeMap<_, _> = inner.query_pairs().into_owned().collect();
+                assert_eq!(next_query["machine_id"], query["machine_id"]);
+                assert_ne!(next_query["nonce"], query["nonce"]);
+                assert_ne!(next_query["challenge"], query["challenge"]);
+                assert!(cancel_login_for_variant(Some(&next.login_id), Some(key)).is_ok());
+            }
         }
     }
 
