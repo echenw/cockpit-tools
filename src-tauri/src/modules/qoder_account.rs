@@ -102,7 +102,17 @@ pub(crate) fn has_client_auth(account: &QoderAccount, kind: QoderVariantKind) ->
         || account.client_auth.contains_key(kind.provider_key())
 }
 
-/// Ephemeral client view. Only the account Owner stores/updates the shared RT.
+pub(crate) fn client_refresh_token(account: &QoderAccount, kind: QoderVariantKind) -> Option<&str> {
+    let source = account_variant_kind(account).ok()?;
+    let raw = if source == kind { account.auth_user_info_raw.as_ref() }
+        else { account.client_auth.get(kind.provider_key()) };
+    raw.and_then(|raw| raw.get("refreshToken")).and_then(Value::as_str)
+        .or_else(|| (source == kind).then_some(account.shared_refresh_token.as_deref()).flatten())
+        .filter(|rt| !rt.trim().is_empty())
+}
+
+/// Each client keeps its own credential pair. Legacy entries without a client RT
+/// use the previous shared grant only to prepare that client's first pair.
 pub(crate) fn account_for_variant(
     account: &QoderAccount,
     kind: QoderVariantKind,
@@ -141,9 +151,14 @@ pub(crate) fn account_for_variant(
         });
     }
     view.variant = stored_variant_key(kind);
-    // Legacy records have not yet passed through the regional migration.
-    let rt = account.shared_refresh_token.clone().or_else(|| account.auth_user_info_raw.as_ref()
-        .and_then(|raw| raw.get("refreshToken")).and_then(Value::as_str).map(str::to_string));
+    // Never replace an existing client RT with a different client's grant.
+    let has_client_rt = view.auth_user_info_raw.as_ref()
+        .and_then(|raw| raw.get("refreshToken")).and_then(Value::as_str)
+        .is_some_and(|rt| !rt.trim().is_empty());
+    let rt = if has_client_rt { None } else {
+        account.shared_refresh_token.clone().or_else(|| account.auth_user_info_raw.as_ref()
+            .and_then(|raw| raw.get("refreshToken")).and_then(Value::as_str).map(str::to_string))
+    };
     if let (Some(raw), Some(rt)) = (view.auth_user_info_raw.as_mut().and_then(Value::as_object_mut), rt) {
         raw.insert("refreshToken".into(), Value::String(rt));
         if let Some(source) = account.auth_user_info_raw.as_ref() {
@@ -193,7 +208,6 @@ fn normalize_regional_credentials(account: &mut QoderAccount) -> Result<(), Stri
         account.shared_refresh_token = Some(rt.to_string());
     }
     account.client_auth.remove(source.provider_key());
-    for raw in account.client_auth.values_mut() { *raw = without_device_rt(raw.take()); }
     Ok(())
 }
 
@@ -239,7 +253,7 @@ fn merge_regional_record(
     }
     let mut clients = existing.client_auth.clone();
     if let Some(raw) = &existing.auth_user_info_raw {
-        clients.insert(account_variant_kind(existing)?.provider_key().to_string(), without_device_rt(raw.clone()));
+        clients.insert(account_variant_kind(existing)?.provider_key().to_string(), raw.clone());
     }
     clients.extend(incoming.client_auth.clone());
     incoming.client_auth = clients;
@@ -745,6 +759,18 @@ fn credentials_match(current: &QoderAccount, expected: &QoderAccount) -> bool {
         && current.shared_refresh_token == expected.shared_refresh_token
         && crate::modules::qoder_oauth::extract_access_token_from_account(current)
             == crate::modules::qoder_oauth::extract_access_token_from_account(expected)
+}
+
+fn client_credentials_match(current: &QoderAccount, expected: &QoderAccount, kind: QoderVariantKind) -> bool {
+    if current.id != expected.id || current.user_id != expected.user_id { return false; }
+    let (Ok(current), Ok(expected)) = (account_for_variant(current, kind), account_for_variant(expected, kind))
+        else { return false; };
+    match (current.auth_user_info_raw, expected.auth_user_info_raw) {
+        (Some(current), Some(expected)) => ["token", "refreshToken", "job_token", "job_refresh_token"]
+            .iter().all(|key| current.get(key) == expected.get(key)),
+        (None, None) => true,
+        _ => false,
+    }
 }
 
 fn reward_snapshot_matches(current: &QoderAccount, expected: &QoderAccount) -> bool {
@@ -1378,13 +1404,14 @@ fn snapshot_to_account(snapshot: QoderSnapshot, existing: Option<&QoderAccount>)
     QoderAccount {
         native_ide_session: existing.is_some_and(|account| {
             account.native_ide_session
-                && account.variant == snapshot.variant
-                && snapshot.user_info_raw.as_ref().is_none_or(|raw| {
-                    account.auth_user_info_raw.as_ref().is_some_and(|saved| {
+                && (QoderVariantKind::parse(snapshot.variant.as_deref()).is_ok_and(|kind| kind.is_app())
+                || snapshot.user_info_raw.as_ref().is_none_or(|raw| {
+                    account_variant_kind(account).ok().and_then(|kind| account_for_variant(account, kind.ide_variant()).ok())
+                        .and_then(|view| view.auth_user_info_raw).is_some_and(|saved| {
                         raw.get("token") == saved.get("token")
                             && raw.get("refreshToken") == saved.get("refreshToken")
                     })
-                })
+                }))
         }),
         native_ide_instances: existing.map(|account| account.native_ide_instances.clone()).unwrap_or_default(),
         shared_refresh_token: None,
@@ -1511,9 +1538,11 @@ fn merge_snapshot(snapshot: QoderSnapshot, new_grant: bool) -> Result<QoderAccou
     let existing = find_existing_account_for_snapshot(&snapshot, &accounts);
     let mut account = snapshot_to_account(snapshot, existing.as_ref());
     if new_grant {
-        account.native_ide_session = false;
-        // 保留尚待停止的实例目录，但明确撤销旧交接；即使服务端返回相同 RT 也不例外。
-        for revision in account.native_ide_instances.values_mut() { *revision = None; }
+        if !account_variant_kind(&account)?.is_app() {
+            account.native_ide_session = false;
+            // IDE 新授权撤销旧 IDE 交接，App 的独立授权不影响它。
+            for revision in account.native_ide_instances.values_mut() { *revision = None; }
+        }
         account.reward_claim_status = None;
         account.reward_window_end_at = None;
         account.reward_status_updated_at = None;
@@ -1565,7 +1594,8 @@ pub(crate) fn save_oauth_grant_for_variant(
 }
 
 /// Refresh and launch preparation update an existing account, never recreate one.
-/// Credential comparison and persistence share the deletion/storage boundary.
+/// Compare the requested client's grant; an update to the other client does not
+/// invalidate this response. Persistence shares the deletion/storage boundary.
 pub(crate) fn update_refresh_snapshot(
     expected: &QoderAccount,
     kind: QoderVariantKind,
@@ -1587,7 +1617,7 @@ fn update_client_snapshot(
     let _lock = QODER_ACCOUNT_INDEX_LOCK.lock().map_err(|_| "获取 Qoder 账号锁失败")?;
     merge_legacy_accounts_locked(load_account_index_checked()?)?;
     let existing = load_account(&expected.id).ok_or("Qoder 账号已被删除，未保存旧刷新结果")?;
-    if !credentials_match(&existing, expected) {
+    if !client_credentials_match(&existing, expected, kind) {
         return Err("Qoder 授权已更新，未保存旧刷新结果".into());
     }
     if !account_supports_variant(&existing, kind) {
@@ -1597,12 +1627,12 @@ fn update_client_snapshot(
         variant: stored_variant_key(kind),
         user_info_raw: Some(user_info_raw), user_plan_raw, credit_usage_raw,
     }, Some(&existing));
-    account.native_ide_session = native_ide_session && !kind.is_app();
+    account.native_ide_session = if kind.is_app() { existing.native_ide_session } else { native_ide_session };
     save_account_record_locked(account)
 }
 
 /// 授权后的后台资料只能更新仍存在、仍使用同一 AT 的客户端投影。
-/// 存在性检查与保存共用索引锁，不能复活已删除账号，也不能回滚共享 RT。
+/// 存在性检查与保存共用索引锁，不能复活已删除账号，也不能回滚该端 RT。
 pub(crate) fn update_login_profile_if_current(
     account_id: &str,
     kind: QoderVariantKind,
@@ -1616,7 +1646,7 @@ pub(crate) fn update_login_profile_if_current(
     merge_legacy_accounts_locked(load_account_index_checked()?)?;
     let Some(existing) = load_account(account_id) else { return Ok(None); };
     let view = account_for_variant(&existing, kind)?;
-    if account_variant_kind(&existing)? != kind { return Ok(None); }
+    if !has_client_auth(&existing, kind) { return Ok(None); }
     let latest_raw = view.auth_user_info_raw.as_ref().ok_or("Qoder 缺少认证资料")?;
     if latest_raw.get("token").and_then(Value::as_str) != Some(expected_token) {
         return Ok(None);
@@ -1972,11 +2002,13 @@ mod official_login_tests {
 }
 
 fn instance_grant_revision(account: &QoderAccount) -> Result<String, String> {
-    let rt = account.shared_refresh_token.as_deref().filter(|rt| !rt.trim().is_empty())
-        .ok_or("Qoder 账号缺少共享 RT，无法记录实例交接")?;
+    let account = account_for_variant(account, account_variant_kind(account)?.ide_variant())?;
+    let rt = account.auth_user_info_raw.as_ref().and_then(|raw| raw.get("refreshToken"))
+        .and_then(Value::as_str).filter(|rt| !rt.trim().is_empty())
+        .ok_or("Qoder IDE 账号缺少 RT，无法记录实例交接")?;
     Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(&(
-        account_variant_kind(account)?.site().as_str(), &account.user_id, rt,
-        crate::modules::qoder_oauth::extract_access_token_from_account(account),
+        account_variant_kind(&account)?.site().as_str(), &account.user_id, rt,
+        crate::modules::qoder_oauth::extract_access_token_from_account(&account),
     )).map_err(|err| err.to_string())?)))
 }
 
@@ -1990,7 +2022,7 @@ fn register_instance_session(expected: &QoderAccount, kind: QoderVariantKind, us
     let key = instance_session_key(kind, user_data_dir)?;
     let _lock = QODER_ACCOUNT_INDEX_LOCK.lock().map_err(|_| "获取 Qoder 账号锁失败")?;
     let mut current = load_account(&expected.id).ok_or("Qoder 账号已删除，未记录实例交接")?;
-    if !credentials_match(&current, expected) { return Err("Qoder 授权已更新，未记录旧实例交接".into()); }
+    if !client_credentials_match(&current, expected, kind) { return Err("Qoder 授权已更新，未记录旧实例交接".into()); }
     let revision = instance_grant_revision(&current)?;
     current.native_ide_instances.insert(key, Some(revision));
     save_account_record_locked(current)?;
@@ -2144,7 +2176,7 @@ async fn reconcile_stopped_default_ide_session(
             if let Some(candidate) = read()? {
                 if candidate.account_id() != account_id { return Err("默认 IDE 登录身份已变化，未回收其他账号会话".into()); }
                 let current = load_account(&account_id).ok_or("Qoder 账号已被删除，未延续默认会话")?;
-                let can_resume = account_variant_kind(&current)? == kind
+                let can_resume = account_supports_variant(&current, kind)
                     && (current.native_ide_session || ide_snapshot_matches_current_grant(&candidate.snapshot, &current));
                 if !resume_for_launch || can_resume {
                     if let NativeSnapshotSave::Saved(saved) = candidate.import()? {
@@ -2163,7 +2195,7 @@ async fn reconcile_stopped_default_ide_session(
     let _lock = QODER_ACCOUNT_INDEX_LOCK.lock().map_err(|_| "获取 Qoder 账号锁失败")?;
     let index = merge_legacy_accounts_locked(load_account_index_checked()?)?;
     for mut account in list_accounts_from_index(&index) {
-        if account.native_ide_session && account_variant_kind(&account)? == kind
+        if account.native_ide_session && account_supports_variant(&account, kind)
             && resumed_account.as_deref() != Some(account.id.as_str()) {
             account.native_ide_session = false;
             save_account_record_locked(account)?;
@@ -2174,11 +2206,13 @@ async fn reconcile_stopped_default_ide_session(
 
 fn ide_snapshot_matches_current_grant(snapshot: &QoderSnapshot, account: &QoderAccount) -> bool {
     let Some(auth) = snapshot.user_info_raw.as_ref() else { return false; };
+    let Ok(account) = account_variant_kind(account).and_then(|kind| account_for_variant(account, kind.ide_variant()))
+        else { return false; };
     let token = auth.get("token").and_then(Value::as_str).filter(|value| !value.trim().is_empty());
     let rt = auth.get("refreshToken").and_then(Value::as_str).filter(|value| !value.trim().is_empty());
     token.is_some() && rt.is_some()
         && token == account.auth_user_info_raw.as_ref().and_then(|raw| raw.get("token")).and_then(Value::as_str)
-        && rt == account.shared_refresh_token.as_deref()
+        && rt == account.auth_user_info_raw.as_ref().and_then(|raw| raw.get("refreshToken")).and_then(Value::as_str)
 }
 
 fn reconcile_instance_snapshot(
@@ -2211,10 +2245,12 @@ fn reconcile_instance_snapshot(
         }
         let disk_rt = snapshot.user_info_raw.as_ref().and_then(|raw| raw.get("refreshToken"))
             .and_then(Value::as_str).filter(|rt| !rt.trim().is_empty()).ok_or("实例最终登录态缺少 RT，未回收凭据")?;
-        if recorded.is_none() && Some(disk_rt) != current.shared_refresh_token.as_deref() {
+        let ide = account_for_variant(&current, kind)?;
+        let current_rt = ide.auth_user_info_raw.as_ref().and_then(|raw| raw.get("refreshToken")).and_then(Value::as_str);
+        if recorded.is_none() && Some(disk_rt) != current_rt {
             return Err("该实例没有授权交接记录且 RT 与账号库不同；已保留实例登录态，拒绝用未知新旧的凭据覆盖或重启".into());
         }
-        let rt_changed = Some(disk_rt) != current.shared_refresh_token.as_deref();
+        let rt_changed = Some(disk_rt) != current_rt;
         saved = snapshot_to_account(snapshot, Some(&current));
         // 自定义实例不代表默认 IDE 已接管。RT 改变时默认会话的旧归属失效。
         saved.native_ide_session = current.native_ide_session && !rt_changed;
@@ -2247,7 +2283,7 @@ pub(crate) fn release_stopped_native_ide_for_launch_with_probe(
     read_stopped: impl FnOnce(QoderVariantKind) -> Result<Option<OfficialLoginCandidate>, String>,
 ) -> Result<(), String> {
     if !account.native_ide_session { return Ok(()); }
-    let kind = account_variant_kind(account)?;
+    let kind = account_variant_kind(account)?.ide_variant();
     if let Some(OfficialLoginCandidate { snapshot }) = read_stopped(kind)? {
         if extract_snapshot_user_id(&snapshot).as_ref() != account.user_id.as_ref() {
             return Err("默认 IDE 登录身份已变化，未接管其他用户的凭据".into());
@@ -2375,14 +2411,14 @@ fn save_native_app_snapshot(mut snapshot: QoderSnapshot) -> Result<NativeSnapsho
         .find(|account| app_session_identity_matches(&snapshot, account) == Some(true))
     {
         let kind = QoderVariantKind::parse(snapshot.variant.as_deref())?;
-        if account_variant_kind(&existing)? != kind {
-            // Another client has since updated the regional grant. A disk snapshot
-            // cannot establish that its RT is newer; keep it as an App projection only.
-            existing.client_auth.insert(kind.provider_key().to_string(), without_device_rt(auth));
-        } else if crate::modules::qoder_oauth::has_saved_oauth_grant(&existing) {
-            // Reauthorization while this App was still open superseded its old
-            // disk grant, even after AT expiry. Reading it must not undo OAuth.
+        let app = account_for_variant(&existing, kind)?;
+        if has_client_auth(&existing, kind) && crate::modules::qoder_oauth::has_saved_oauth_grant(&app) {
+            // A fresh App OAuth grant wins over an older native App snapshot,
+            // including when the IDE has since updated its independent grant.
             return Ok(NativeSnapshotSave::IgnoredStaleCredentials);
+        }
+        if account_variant_kind(&existing)? != kind {
+            existing.client_auth.insert(kind.provider_key().to_string(), auth);
         } else {
             // The native App still owns this grant, including its final renewal.
             existing.auth_user_info_raw = Some(auth);
@@ -2404,17 +2440,16 @@ fn save_native_ide_snapshot(snapshot: QoderSnapshot) -> Result<NativeSnapshotSav
     let index = merge_legacy_accounts_locked(load_account_index_checked()?)?;
     let existing = find_existing_account_for_snapshot(&snapshot, &list_accounts_from_index(&index));
     if let Some(mut saved) = existing.clone() {
-        if account_variant_kind(&saved)? != kind {
-            // 另一客户端拥有地区 RT；本地 IDE 快照只提供该端的投影。
-            saved.client_auth.insert(kind.provider_key().to_string(), without_device_rt(auth.clone()));
-            return save_account_record_locked(saved).map(NativeSnapshotSave::Saved);
-        }
-        let matches_shared_rt = auth.get("refreshToken").and_then(Value::as_str)
-            .filter(|rt| !rt.trim().is_empty())
-            .is_some_and(|rt| Some(rt) == saved.shared_refresh_token.as_deref());
-        if !saved.native_ide_session && !matches_shared_rt {
-            // AT 过期不影响 OAuth 的优先级；旧磁盘 RT 不能证明自身更新。
+        let current_rt = client_refresh_token(&saved, kind);
+        let disk_rt = auth.get("refreshToken").and_then(Value::as_str).filter(|rt| !rt.trim().is_empty());
+        if !saved.native_ide_session && current_rt.is_some() && disk_rt != current_rt {
+            // This IDE's newer authorization is independent of the App's grant.
             return Ok(NativeSnapshotSave::IgnoredStaleCredentials);
+        }
+        if account_variant_kind(&saved)? != kind {
+            saved.client_auth.insert(kind.provider_key().to_string(), auth.clone());
+            saved.native_ide_session = true;
+            return save_account_record_locked(saved).map(NativeSnapshotSave::Saved);
         }
     }
     let mut account = snapshot_to_account(snapshot, existing.as_ref());
@@ -2567,6 +2602,7 @@ pub fn peek_local_authorization_revision_for_variant(
     )))
 }
 
+/// 仅接受成功读取的权威列表；读取错误不可转为空列表参与过期映射清理。
 pub(crate) fn resolve_current_account_id_for_variant(
     accounts: &[QoderAccount],
     variant: QoderVariantKind,
@@ -3426,7 +3462,7 @@ pub fn run_quota_alert_if_needed() -> Result<(), String> {
     }
 
     let threshold = normalize_quota_alert_threshold(config.qoder_quota_alert_threshold);
-    let accounts = list_accounts();
+    let accounts = list_accounts_checked()?;
     let now = now_ts();
 
     for kind in all_qoder_variant_kinds() {
@@ -3726,7 +3762,7 @@ mod tests {
                 assert_eq!(saved.auth_user_info_raw, latest.auth_user_info_raw);
                 let app_auth = &saved.client_auth[app.provider_key()];
                 assert_eq!(app_auth["token"], "dt-old-app-fixture");
-                assert!(app_auth.get("refreshToken").is_none());
+                assert_eq!(app_auth["refreshToken"], "drt-old-app-fixture");
                 assert_eq!(load_account(&saved.id).unwrap().shared_refresh_token, latest.shared_refresh_token);
             }
         }
@@ -3995,6 +4031,9 @@ mod tests {
                     request.extend_from_slice(&chunk[..count]);
                 }
                 let request = String::from_utf8(request).unwrap();
+                assert!(request.starts_with("GET /sash/api/v2/me/usage ")
+                    || request.starts_with("GET /api/v2/user/plan "),
+                    "claim synchronization must only query quota and plan");
                 assert!(request.to_ascii_lowercase().contains("authorization: bearer dt-after-fixture"));
                 assert!(!request.contains("dt-before-fixture"));
                 assert!(account_lock.try_lock().is_err(), "quota request must retain the refresh lock");
@@ -4962,6 +5001,96 @@ mod tests {
     }
 
     #[test]
+    fn regional_clients_keep_their_own_device_tokens_through_refresh_and_native_renewal() {
+        let _lock = crate::modules::test_support::env_lock().lock().unwrap();
+        let _guard = DataDirGuard::new("independent-client-device-tokens");
+        for (ide, app) in [
+            (QoderVariantKind::Qoder, QoderVariantKind::QoderApp),
+            (QoderVariantKind::QoderCnIde, QoderVariantKind::QoderCnApp),
+        ] {
+            let uid = format!("independent-{}", ide.provider_key());
+            let mut grant = save_oauth_grant_for_variant(app.provider_key(), serde_json::json!({
+                "id":uid, "token":"dt-app-first-fixture", "refreshToken":"drt-app-first-fixture",
+            })).unwrap();
+            // Existing installations may have an IDE AT projection without its
+            // own RT. It can bootstrap preparation, but is not a prepared grant.
+            grant.client_auth.insert(ide.provider_key().into(), serde_json::json!({
+                "id":uid, "token":"dt-legacy-ide-fixture",
+            }));
+            let grant = upsert_account_record(grant).unwrap();
+            assert!(client_refresh_token(&grant, ide).is_none());
+            assert_eq!(account_for_variant(&grant, ide).unwrap().auth_user_info_raw.unwrap()["refreshToken"],
+                "drt-app-first-fixture");
+            let ide_auth = serde_json::json!({
+                "id":uid, "token":"dt-ide-first-fixture", "refreshToken":"drt-ide-first-fixture",
+            });
+            let handed = update_client_snapshot(&grant, ide, ide_auth, None, None, true).unwrap();
+            assert_eq!(account_for_variant(&load_account(&grant.id).unwrap(), app).unwrap()
+                .auth_user_info_raw.unwrap()["refreshToken"], "drt-app-first-fixture");
+
+            let app_auth = serde_json::json!({
+                "schemaVersion":1, "user":{"id":uid},
+                "token":"dt-app-first-fixture", "refreshToken":"drt-app-first-fixture",
+            });
+            // The App refresh started before the IDE handoff: only its own grant
+            // determines whether this response is still current.
+            let native = update_refresh_snapshot(&grant, app, app_auth.clone(), None, None).unwrap();
+            assert!(native.native_ide_session, "App updates must retain the IDE handoff");
+            let instance_dir = _guard.dir.join(format!("instance-{}", ide.provider_key()));
+            register_instance_session(&native, ide, &instance_dir.to_string_lossy()).unwrap();
+            let revision = instance_grant_revision(&native).unwrap();
+            let mut renewed_app = app_auth;
+            renewed_app["token"] = Value::from("dt-app-renewed-fixture");
+            renewed_app["refreshToken"] = Value::from("drt-app-renewed-fixture");
+            let renewed = save_native_app_snapshot(QoderSnapshot {
+                variant: stored_variant_key(app), user_info_raw: Some(renewed_app),
+                ..Default::default()
+            }).unwrap().into_imported_account().unwrap();
+            assert!(renewed.native_ide_session);
+            assert_eq!(instance_grant_revision(&renewed).unwrap(), revision);
+            assert_eq!(account_for_variant(&renewed, ide).unwrap().auth_user_info_raw.unwrap()["refreshToken"],
+                "drt-ide-first-fixture");
+
+            let renewed = save_native_ide_snapshot(QoderSnapshot {
+                variant: stored_variant_key(ide),
+                user_info_raw: Some(serde_json::json!({
+                    "id":uid, "token":"dt-ide-renewed-fixture", "refreshToken":"drt-ide-renewed-fixture",
+                })), ..Default::default()
+            }).unwrap().into_imported_account().unwrap();
+            assert_eq!(account_for_variant(&renewed, app).unwrap().auth_user_info_raw.unwrap()["refreshToken"],
+                "drt-app-renewed-fixture");
+            assert_eq!(account_for_variant(&renewed, ide).unwrap().auth_user_info_raw.unwrap()["refreshToken"],
+                "drt-ide-renewed-fixture");
+            assert!(update_refresh_snapshot(&handed, ide, serde_json::json!({
+                "id":uid, "token":"dt-stale-fixture", "refreshToken":"drt-stale-fixture",
+            }), None, None).is_err());
+
+            let fresh = save_oauth_grant_for_variant(app.provider_key(), serde_json::json!({
+                "id":uid, "token":"dt-app-oauth-new-fixture", "refreshToken":"drt-app-oauth-new-fixture",
+            })).unwrap();
+            assert!(fresh.native_ide_session, "App reauthorization does not revoke an independent IDE grant");
+            let ide_view = account_for_variant(&fresh, ide).unwrap();
+            let current = update_login_profile_if_current(&fresh.id, ide, "dt-ide-renewed-fixture",
+                ide_view.auth_user_info_raw, None, None, None).unwrap().unwrap();
+            assert_eq!(account_variant_kind(&current).unwrap(), ide);
+            let stale = save_native_app_snapshot(QoderSnapshot {
+                variant: stored_variant_key(app),
+                user_info_raw: Some(serde_json::json!({
+                    "schemaVersion":1, "user":{"id":uid}, "token":"dt-old-app-fixture",
+                    "refreshToken":"drt-old-app-fixture",
+                })), ..Default::default()
+            }).unwrap();
+            assert!(matches!(stale, NativeSnapshotSave::IgnoredStaleCredentials));
+            assert!(update_refresh_snapshot(&renewed, app, serde_json::json!({
+                "id":uid, "token":"dt-late-app-fixture", "refreshToken":"drt-late-app-fixture",
+            }), None, None).is_err());
+            assert_eq!(client_refresh_token(&load_account(&grant.id).unwrap(), app), Some("drt-app-oauth-new-fixture"));
+            let visible = serde_json::to_string(&load_account(&grant.id).unwrap().for_ipc()).unwrap();
+            assert!(!visible.contains("drt-") && !visible.contains("dt-"));
+        }
+    }
+
+    #[test]
     fn regional_authorization_updates_one_account_and_preserves_other_client_at() {
         let _lock = crate::modules::test_support::env_lock().lock().unwrap();
         let _guard = DataDirGuard::new("regional-authorization");
@@ -4978,13 +5107,13 @@ mod tests {
             assert_eq!(second.tags.as_deref(), Some(&["keep-tag".to_string()][..]));
             let ide_view = account_for_variant(&second, QoderVariantKind::parse(Some(ide)).unwrap()).unwrap();
             assert_eq!(ide_view.auth_user_info_raw.as_ref().unwrap()["token"], "ide-at-fixture");
-            assert_eq!(ide_view.auth_user_info_raw.as_ref().unwrap()["refreshToken"], "second-rt-fixture");
+            assert_eq!(ide_view.auth_user_info_raw.as_ref().unwrap()["refreshToken"], "first-rt-fixture");
             let stored_path = resolve_account_file_path(&second.id).unwrap();
             let content = fs::read_to_string(&stored_path).unwrap();
             let (stored, _) = crate::modules::secure_account_storage::deserialize_account_file::<QoderAccount>(&stored_path, &content).unwrap();
             assert_eq!(stored.shared_refresh_token.as_deref(), Some("second-rt-fixture"));
             assert!(stored.auth_user_info_raw.as_ref().unwrap().get("refreshToken").is_none());
-            assert!(stored.client_auth.values().all(|raw| raw.get("refreshToken").is_none()));
+            assert_eq!(stored.client_auth[ide]["refreshToken"], "first-rt-fixture");
             let public = serde_json::to_string(&second.clone().for_ipc()).unwrap();
             assert!(!public.contains("at-fixture") && !public.contains("rt-fixture"));
             update_account_tags(&second.id, vec![]).unwrap();
@@ -5047,7 +5176,7 @@ mod tests {
         assert!(std::sync::Arc::ptr_eq(&old, &current), "aliases must share the credential lock");
         let ide_view = account_for_variant(&accounts[0], QoderVariantKind::QoderCnIde).unwrap();
         assert_eq!(ide_view.auth_user_info_raw.as_ref().unwrap()["token"], "old-ide-at-fixture");
-        assert_eq!(ide_view.auth_user_info_raw.as_ref().unwrap()["refreshToken"], "new-rt-fixture");
+        assert_eq!(ide_view.auth_user_info_raw.as_ref().unwrap()["refreshToken"], "old-rt-fixture");
         assert_eq!(list_accounts_checked().unwrap().len(), 1);
         assert_eq!(fs::read_dir(get_data_dir().unwrap().join("qoder-regional-backups")).unwrap().count(), 1,
             "idempotent migration must not make another backup");
@@ -5160,7 +5289,7 @@ mod tests {
                 let view = account_for_variant(&merged, kind).unwrap();
                 let raw = view.auth_user_info_raw.as_ref().unwrap();
                 assert_eq!(raw["token"], expected_at);
-                assert_eq!(raw["refreshToken"], expected_rt);
+                assert_eq!(raw["refreshToken"], if kind.is_app() { "app-rt-fixture" } else { "ide-rt-fixture" });
             }
 
             // Normal updates after migration must not restore explicitly cleared metadata.
@@ -5241,6 +5370,7 @@ mod tests {
         ] {
             for source in [kind.provider_key(), peer] {
                 for expiry in [0, chrono::Utc::now().timestamp_millis() + 600_000] {
+                    let uid = format!("local-oauth-{}-{source}-{}", kind.provider_key(), expiry == 0);
                     let previous = save_oauth_grant_for_variant(kind.provider_key(), serde_json::json!({
                         "id":format!("previous-{}", kind.provider_key()), "token":"dt-previous-fixture",
                         "refreshToken":"drt-previous-fixture"
@@ -5249,16 +5379,16 @@ mod tests {
                         kind.provider_key(), Some(&previous.id),
                     ).unwrap();
                     let fresh = save_oauth_grant_for_variant(source, serde_json::json!({
-                        "id":"local-oauth-fixture", "token":"dt-new-oauth-fixture",
+                        "id":uid, "token":"dt-new-oauth-fixture",
                         "refreshToken":"drt-new-oauth-fixture", "expireTime":expiry.to_string()
                     })).unwrap();
                     let mut old_raw = serde_json::json!({
-                        "id":"local-oauth-fixture", "token":"dt-old-local-fixture",
+                        "id":uid, "token":"dt-old-local-fixture",
                         "refreshToken":"drt-old-local-fixture"
                     });
                     if kind.is_app() {
                         old_raw["schemaVersion"] = Value::from(1);
-                        old_raw["user"] = serde_json::json!({"id":"local-oauth-fixture"});
+                        old_raw["user"] = serde_json::json!({"id":uid});
                     }
                     let old_local = QoderSnapshot {
                         variant: stored_variant_key(kind),
@@ -5275,7 +5405,7 @@ mod tests {
                         assert_eq!(imported.id, fresh.id);
                         let projection = &persisted.client_auth[kind.provider_key()];
                         assert_eq!(projection["token"], "dt-old-local-fixture");
-                        assert!(projection.get("refreshToken").is_none());
+                        assert_eq!(projection["refreshToken"], "drt-old-local-fixture");
                         assert_eq!(crate::modules::provider_current_state::get_current_account_id(kind.provider_key()).unwrap().as_deref(), Some(fresh.id.as_str()));
                     } else {
                         assert!(matches!(&result, NativeSnapshotSave::IgnoredStaleCredentials));
