@@ -31,7 +31,7 @@ fn resolve_provider_current_account_id(platform: &str) -> Result<Option<String>,
             // 四变体共享同一账号存储，但当前账号映射按变体 provider_key 分桶存储；
             // 按请求变体解析对应桶，避免非默认变体读取默认 `qoder` 桶。
             let variant = crate::modules::qoder_variant::QoderVariantKind::parse(Some(platform))?;
-            let accounts = crate::modules::qoder_account::list_accounts();
+            let accounts = crate::modules::qoder_account::list_accounts_checked()?;
             Ok(
                 crate::modules::qoder_account::resolve_current_account_id_for_variant(
                     &accounts, variant,
@@ -145,6 +145,51 @@ mod tests {
                 "empty data dir should have no current account"
             );
         }
+    }
+
+    #[test]
+    fn qoder_current_lookup_preserves_all_mappings_when_one_account_cannot_be_read() {
+        use crate::modules::{provider_current_state, qoder_account};
+        let _lock = crate::modules::test_support::env_lock().lock().unwrap();
+        let guard = DataDirGuard::new("qoder-current-read-failure");
+        let intl = qoder_account::upsert_test_account_from_snapshot("qoder_app", serde_json::json!({
+            "id": "current-intl-fixture", "token": "dt-intl-fixture", "refreshToken": "drt-intl-fixture",
+        }), None, None).unwrap();
+        let cn = qoder_account::upsert_test_account_from_snapshot("qoder_cn_app", serde_json::json!({
+            "id": "current-cn-fixture", "token": "dt-cn-fixture", "refreshToken": "drt-cn-fixture",
+        }), None, None).unwrap();
+        let mappings = [
+            ("qoder", intl.id.as_str()), ("qoder_app", intl.id.as_str()),
+            ("qoder_cn_ide", cn.id.as_str()), ("qoder_cn_app", cn.id.as_str()),
+        ];
+        for (platform, id) in mappings {
+            provider_current_state::set_current_account_id(platform, Some(id)).unwrap();
+            assert_eq!(resolve_provider_current_account_id(platform).unwrap().as_deref(), Some(id));
+        }
+        let state_path = guard.dir.join("provider_current_accounts.json");
+        let state_before = fs::read(&state_path).unwrap();
+        let detail_path = guard.dir.join("qoder_accounts").join(format!("{}.json", cn.id));
+        let detail_before = fs::read(&detail_path).unwrap();
+        // Keep the file present: a failed decode is not a confirmed account deletion.
+        fs::write(&detail_path, b"{invalid account fixture").unwrap();
+        assert!(qoder_account::list_accounts_checked().is_err());
+        for (platform, id) in mappings {
+            assert!(resolve_provider_current_account_id(platform).is_err());
+            assert_eq!(provider_current_state::get_current_account_id(platform).unwrap().as_deref(), Some(id));
+        }
+        assert_eq!(fs::read(&state_path).unwrap(), state_before);
+
+        fs::write(&detail_path, detail_before).unwrap();
+        for (platform, id) in mappings {
+            assert_eq!(resolve_provider_current_account_id(platform).unwrap().as_deref(), Some(id));
+        }
+        // A successful, authoritative read still cleans up a genuinely deleted account.
+        qoder_account::remove_account(&cn.id).unwrap();
+        for platform in ["qoder_cn_ide", "qoder_cn_app"] {
+            assert_eq!(resolve_provider_current_account_id(platform).unwrap(), None);
+            assert_eq!(provider_current_state::get_current_account_id(platform).unwrap(), None);
+        }
+        assert_eq!(provider_current_state::get_current_account_id("qoder_app").unwrap(), Some(intl.id));
     }
 
     #[test]
