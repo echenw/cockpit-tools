@@ -155,8 +155,6 @@ export function useActionBubble() {
   }, [bubble, closeBubble]);
 
   const renderBubble = () => {
-    if (!bubble) return null;
-
     const r = 9;
     const w = pos?.width ?? 160;
     const h = pos?.height ?? 36;
@@ -199,7 +197,7 @@ export function useActionBubble() {
       ].join(' ');
     }
 
-    return createPortal(
+    const visibleBubble = bubble && (
       <div
         ref={containerRef}
         className={`action-bubble-container ${placement} ${bubble.tone}`}
@@ -213,6 +211,7 @@ export function useActionBubble() {
         <div className="action-bubble-wrapper">
           {/* 单一连续矢量背景：包含圆角框与箭头一体化轮廓与填充 */}
           <svg
+            aria-hidden="true"
             className="action-bubble-svg-shape"
             width={w}
             height={h + 6}
@@ -229,7 +228,7 @@ export function useActionBubble() {
               marginTop: placement === 'bottom' ? '6px' : '0px',
             }}
           >
-            <span className="action-bubble-icon">
+            <span className="action-bubble-icon" aria-hidden="true">
               {bubble.tone === 'success' && <Check size={13} strokeWidth={2.6} />}
               {bubble.tone === 'error' && <AlertCircle size={13} strokeWidth={2.4} />}
               {bubble.tone === 'info' && <Info size={13} strokeWidth={2.4} />}
@@ -248,7 +247,19 @@ export function useActionBubble() {
             )}
           </div>
         </div>
-      </div>,
+      </div>
+    );
+
+    return createPortal(
+      <>
+        <div className="action-bubble-announcement" role="status" aria-atomic="true">
+          {bubble && bubble.tone !== 'error' && <span key={bubble.id}>{bubble.text}</span>}
+        </div>
+        <div className="action-bubble-announcement" role="alert" aria-atomic="true">
+          {bubble?.tone === 'error' && <span key={bubble.id}>{bubble.text}</span>}
+        </div>
+        {visibleBubble}
+      </>,
       document.body
     );
   };

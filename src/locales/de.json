@@ -6809,7 +6809,7 @@
     },
     "title": "Qoder-Kontenverwaltung",
     "suite": {
-      "client": "Client",
+      "client": "Client-Anwendung",
       "switchTarget": "Zielclient",
       "switchToClient": "Zu {{client}} wechseln",
       "sharedAccounts": "App und IDE teilen Konten innerhalb einer Region. Einmal autorisieren oder importieren, um beide zu nutzen.",

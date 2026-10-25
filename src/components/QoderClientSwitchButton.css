@@ -1,0 +1,126 @@
+.qoder-current-clients {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.qoder-current-client {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid color-mix(in srgb, var(--success) 40%, var(--border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--success) 10%, var(--bg-secondary));
+}
+
+.qoder-current-client-icon {
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+}
+
+.qoder-client-switch-popover {
+  position: fixed;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(-4px) scale(0.96);
+  transform-origin: top center;
+  filter: drop-shadow(0 6px 12px color-mix(in srgb, var(--text-primary) 15%, transparent));
+  transition: opacity 0.15s ease, transform 0.15s ease, visibility 0s linear 0.15s;
+}
+
+.qoder-client-switch-popover.above {
+  transform: translateY(4px) scale(0.96);
+  transform-origin: bottom center;
+}
+
+.qoder-client-switch-popover.is-open {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateY(0) scale(1);
+  transition-delay: 0s;
+}
+
+.qoder-client-switch-content {
+  position: relative;
+  box-sizing: border-box;
+  padding: 10px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+}
+
+.qoder-client-switch-arrow {
+  position: absolute;
+  top: -4px;
+  width: 8px;
+  height: 8px;
+  margin-left: -4px;
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  transform: rotate(45deg);
+}
+
+.qoder-client-switch-popover.above .qoder-client-switch-arrow {
+  top: auto;
+  bottom: -4px;
+}
+
+.qoder-client-switch-label {
+  margin-bottom: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-align: center;
+}
+
+.qoder-client-switch-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.qoder-client-switch-option {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.qoder-client-switch-option:hover {
+  border-color: var(--success);
+  background: color-mix(in srgb, var(--success) 8%, var(--bg-secondary));
+}
+
+.qoder-client-switch-option:focus-visible {
+  outline: 2px solid var(--success);
+  outline-offset: 2px;
+}
+
+.qoder-client-switch-icon {
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .qoder-client-switch-popover,
+  .qoder-client-switch-option {
+    transition: none;
+  }
+}

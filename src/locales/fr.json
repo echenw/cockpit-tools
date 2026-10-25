@@ -6809,7 +6809,7 @@
     },
     "title": "Gestion des comptes Qoder",
     "suite": {
-      "client": "Client",
+      "client": "Application cliente",
       "switchTarget": "Client cible",
       "switchToClient": "Basculer vers {{client}}",
       "sharedAccounts": "App et IDE partagent les comptes dans chaque région. Une seule autorisation ou importation suffit.",
