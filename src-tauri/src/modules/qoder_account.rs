@@ -4396,7 +4396,10 @@ mod tests {
 
     #[test]
     fn default_qoder_inject_payload_is_verbatim() {
-        let account = cn_ide_test_account();
+        let mut account = cn_ide_test_account();
+        account.auth_credit_usage_raw = Some(serde_json::json!({
+            "userQuota":{"used":1,"total":100,"remaining":99,"percentage":1}
+        }));
         let (user_info, user_plan, usage) = build_qoder_inject_payloads(&account, false).unwrap();
 
         assert_eq!(
@@ -4413,6 +4416,24 @@ mod tests {
         );
         let user_info: Value = serde_json::from_str(&user_info).unwrap();
         assert!(user_info.get("login_source").is_none());
+    }
+
+    #[test]
+    fn qoder_ide_payload_uses_only_the_personal_usage_scope() {
+        for cn in [false, true] {
+            let mut account = cn_ide_test_account();
+            let personal = serde_json::json!({"userQuota":{"used":1,"total":100,"remaining":99,"percentage":1}});
+            account.auth_credit_usage_raw = Some(serde_json::json!({
+                "displayMode":"hybrid", "qoderUsage":personal,
+                "enterpriseUsage":{"used":999,"total":1000}
+            }));
+            let (_, _, raw) = build_qoder_inject_payloads(&account, cn).unwrap();
+            assert_eq!(serde_json::from_str::<Value>(&raw).unwrap(), personal);
+            account.auth_credit_usage_raw.as_mut().unwrap()["displayMode"] = Value::from("enterprise");
+            let (_, _, raw) = build_qoder_inject_payloads(&account, cn).unwrap();
+            assert_eq!(serde_json::from_str::<Value>(&raw).unwrap(), Value::Null,
+                "enterprise-only snapshots must clear the old personal quota");
+        }
     }
 
     #[test]

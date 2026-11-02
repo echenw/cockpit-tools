@@ -73,7 +73,7 @@ const DATA_POLICY_PATH: &str = "/api/v2/config/getDataPolicy";
 const USER_PLAN_PATH: &str = "/api/v2/user/plan";
 const CREDIT_USAGE_PATH: &str = "/api/v2/quota/usage";
 // Sash 配额主链路：GET {openapi}/sash/api/v2/me/usage
-// （`Bearer <dt>` + `cosy-clienttype: 10` + `UA: Qoder`，intl/CN 同形）。
+// App/CN 使用桌面请求头；国际 IDE 1.38 沿用上游的原始 Authorization 协议。
 const QODER_SASH_USAGE_PATH: &str = "/sash/api/v2/me/usage";
 const AUTH_STATUS_AUTHORIZED: i64 = 2;
 const AUTH_STATUS_IP_BANNED_ERROR: i64 = 6;
@@ -1836,6 +1836,11 @@ fn sash_usage_numeric_field(node: &Value, bucket: &str, field: &str) -> Result<(
 }
 
 fn validate_sash_usage_schema(body: &Value) -> Result<(), String> {
+    if body.get("displayMode").and_then(Value::as_str) == Some("enterprise")
+        && crate::modules::qoder_usage::enterprise(body).is_some()
+    {
+        return Ok(());
+    }
     let usage = body
         .get("qoderUsage")
         .ok_or_else(|| "Qoder sash 用量缺少 qoderUsage，无法采用主路".to_string())?;
@@ -1858,10 +1863,19 @@ fn validate_sash_usage_schema(body: &Value) -> Result<(), String> {
 
 async fn fetch_qoder_sash_usage(
     client: &reqwest::Client,
+    params: &QoderVariantParams,
     openapi_base_url: &str,
     token: &str,
 ) -> Result<Value, String> {
-    let headers = build_qoder_app_usage_headers(token);
+    // The upstream IDE 1.38 protocol uses raw Authorization; App/CN keep their desktop headers.
+    let headers = if params.kind == QoderVariantKind::Qoder {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(reqwest::header::AUTHORIZATION, format!("Bearer {token}")
+            .parse().map_err(|_| "QODER_USAGE_INVALID_AUTH_HEADER".to_string())?);
+        headers
+    } else {
+        build_qoder_app_usage_headers(token)
+    };
     let response = client
         .get(format!("{}{}", openapi_base_url, QODER_SASH_USAGE_PATH))
         .headers(headers)
@@ -1887,7 +1901,16 @@ async fn fetch_qoder_sash_usage(
             QODER_SASH_USAGE_PATH, err
         )
     })?;
-    validate_sash_usage_schema(&body)?;
+    if params.kind == QoderVariantKind::Qoder {
+        if !crate::modules::qoder_usage::is_envelope(&body)
+            && body.get("totalUsagePercentage").is_none()
+            && body.get("userQuota").is_none()
+        {
+            return Err("QODER_USAGE_RESPONSE_INVALID".into());
+        }
+    } else {
+        validate_sash_usage_schema(&body)?;
+    }
     Ok(body)
 }
 
@@ -1909,7 +1932,7 @@ async fn fetch_qoder_credit_usage(
     token: &str,
     machine_info: Option<&QoderMachineInfo>,
 ) -> Result<Value, String> {
-    match fetch_qoder_sash_usage(client, openapi_base_url, token).await {
+    match fetch_qoder_sash_usage(client, params, openapi_base_url, token).await {
         Ok(value) => Ok(value),
         Err(sash_err) => {
             logger::log_warn(&format!(
@@ -4238,6 +4261,43 @@ mod tests {
     }
 
     #[test]
+    fn qoder_new_usage_protocol_keeps_regional_enterprise_payloads() {
+        use std::io::Write;
+        let enterprise = serde_json::json!({
+            "displayMode":"enterprise",
+            "enterpriseUsage":{"detailUrl":"https://qoder.invalid/usage","used":999}
+        });
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        for (variant, expected) in [
+            ("qoder", serde_json::json!({"userQuota":{"used":1,"total":100,"remaining":99,"percentage":1}})),
+            ("qoder", enterprise.clone()),
+            ("qoder_app", enterprise.clone()),
+            ("qoder_cn_ide", enterprise.clone()),
+            ("qoder_cn_app", enterprise),
+        ] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let response = t7_mock_response("200 OK", &expected.to_string());
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let head = t7_read_mock_request_head(&mut stream);
+                stream.write_all(response.as_bytes()).unwrap();
+                head.to_ascii_lowercase()
+            });
+            let params = resolve_qoder_variant_params(variant).unwrap();
+            let result = runtime.block_on(fetch_qoder_credit_usage(
+                &build_reqwest_client().unwrap(), &params, &base, "dt-fictional-usage", None,
+            ));
+            let head = server.join().unwrap();
+            assert_eq!(result.unwrap(), expected, "{variant} must preserve the official usage scope");
+            assert!(head.contains("get /sash/api/v2/me/usage"));
+            assert!(head.contains("authorization: bearer dt-fictional-usage"));
+            assert_eq!(head.contains("cosy-clienttype: 10"), variant != "qoder");
+        }
+    }
+
+    #[test]
     fn qoder_ide_sash_fallback_on_500_uses_legacy() {
         use std::io::Write;
         let legacy_body = r#"{"credits":{"total":200,"used":100,"remaining":100}}"#;
@@ -4295,7 +4355,8 @@ mod tests {
         let sash_lower = sash_head.to_ascii_lowercase();
         assert!(sash_lower.contains("get /sash/api/v2/me/usage"));
         assert!(sash_lower.contains("authorization: bearer dt-synth-frozen-001"));
-        assert!(sash_lower.contains("cosy-clienttype: 10"));
+        assert!(!sash_lower.contains("cosy-clienttype:"));
+        // The shared HTTP client retains its default UA, as in the upstream IDE path.
         assert!(sash_lower.contains("user-agent: qoder"));
 
         let legacy_head = heads

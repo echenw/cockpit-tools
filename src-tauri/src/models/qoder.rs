@@ -15,7 +15,7 @@ const PUBLIC_RAW_SCALARS: &[&str] = &[
     "addCreditsUrl", "add_credits_url", "topUpUrl", "top_up_url", "expiresAt",
     "expires_at", "resetAt", "reset_at", "userType", "user_type",
     "isPersonalVersion", "is_personal_version", "isHighestTier",
-    "is_highest_tier", "isQuotaExceeded",
+    "is_highest_tier", "isQuotaExceeded", "displayMode",
 ];
 const PUBLIC_QUOTA_FIELDS: &[&str] = &[
     "used", "usage", "consumed", "total", "quota", "limit", "remaining",
@@ -176,7 +176,7 @@ impl QoderAccount {
     /// Sash 响应有 qoderUsage 包装层，本地载荷和 legacy 接口也可能直接返回根节点。
     pub fn credit_usage(&self) -> Option<&Value> {
         let raw = self.auth_credit_usage_raw.as_ref()?;
-        Some(raw.get("qoderUsage").unwrap_or(raw))
+        crate::modules::qoder_usage::personal(raw)
     }
 
     pub fn for_ipc(mut self) -> Self {
@@ -192,7 +192,9 @@ impl QoderAccount {
         }
         self.auth_user_info_raw = public_raw_payload(self.auth_user_info_raw);
         self.auth_user_plan_raw = public_raw_payload(self.auth_user_plan_raw);
-        self.auth_credit_usage_raw = public_raw_payload(self.credit_usage().cloned());
+        self.auth_credit_usage_raw = public_raw_payload(
+            self.credit_usage().cloned().or_else(|| self.auth_credit_usage_raw.clone()),
+        );
         self
     }
 
@@ -322,6 +324,24 @@ mod tests {
         account_with_real_plan.auth_user_plan_raw = Some(serde_json::json!({"plan": "PRO"}));
         account_with_real_plan.plan_type = Some("PRO".to_string());
         assert_eq!(account_with_real_plan.plan_type_for_display(), Some("PRO"));
+    }
+
+    #[test]
+    fn ipc_preserves_enterprise_scope_without_exposing_personal_or_private_data() {
+        let account: QoderAccount = serde_json::from_value(serde_json::json!({
+            "id":"fixture", "email":"fixture@example.invalid", "created_at":1, "last_used":1,
+            "auth_credit_usage_raw":{
+                "displayMode":"enterprise", "token":"fictional-secret",
+                "qoderUsage":{"userQuota":{"used":50,"total":100}},
+                "enterpriseUsage":{"used":999,"refreshToken":"fictional-secret"}
+            }
+        })).unwrap();
+        assert!(account.credit_usage().is_none());
+        let visible = account.clone().for_ipc();
+        assert_eq!(visible.auth_credit_usage_raw, Some(serde_json::json!({"displayMode":"enterprise"})));
+        assert!(!serde_json::to_string(&visible).unwrap().contains("fictional-secret"));
+        assert_eq!(visible.clone().for_ipc().auth_credit_usage_raw, visible.auth_credit_usage_raw);
+        assert!(account.auth_credit_usage_raw.as_ref().unwrap().get("enterpriseUsage").is_some());
     }
 
     #[test]

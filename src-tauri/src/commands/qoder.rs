@@ -440,6 +440,19 @@ pub async fn inject_qoder_account(
     account_id: String,
     variant_key: Option<String>,
 ) -> Result<String, String> {
+    let runtime = tokio::runtime::Handle::current();
+    tauri::async_runtime::spawn_blocking(move || {
+        runtime.block_on(inject_qoder_account_inner(app, account_id, variant_key))
+    })
+    .await
+    .map_err(|error| format!("QODER_SWITCH_WORKER_FAILED: {error}"))?
+}
+
+async fn inject_qoder_account_inner(
+    app: AppHandle,
+    account_id: String,
+    variant_key: Option<String>,
+) -> Result<String, String> {
     let started_at = Instant::now();
     logger::log_info(&format!(
         "[Qoder Switch] 开始切换账号: account_id={}",

@@ -1315,7 +1315,7 @@ pub fn inject_secret_to_state_db_for_codebuddy_cn(
     )
 }
 
-/// Qoder 登录三项数据一起写入，读回解密校验在提交前完成。
+/// Qoder 登录与个人/企业用量一起写入，读回解密校验在提交前完成。
 /// 加密全部完成后才开启写事务；写后解密校验失败也由该事务回滚。
 pub(crate) fn inject_qoder_secrets_atomic(
     db_path: &Path,
@@ -1578,11 +1578,12 @@ mod tests {
     fn qoder_secret_batch_rolls_back_later_write_and_verification_failures() {
         let mut conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT);
-            INSERT INTO ItemTable VALUES ('userInfo','old-info'),('userPlan','old-plan'),('creditUsage','old-credit');
+            INSERT INTO ItemTable VALUES ('userInfo','old-info'),('userPlan','old-plan'),('creditUsage','old-credit'),('enterpriseUsage','old-enterprise');
             CREATE TRIGGER reject_plan BEFORE INSERT ON ItemTable WHEN NEW.key='userPlan'
             BEGIN SELECT RAISE(ABORT,'fixture write failure'); END;").unwrap();
         let values = vec![("userInfo".into(), "new-info".into()),
-            ("userPlan".into(), "new-plan".into()), ("creditUsage".into(), "new-credit".into())];
+            ("userPlan".into(), "new-plan".into()), ("creditUsage".into(), "new-credit".into()),
+            ("enterpriseUsage".into(), "new-enterprise".into())];
         let read = |conn: &Connection, key: &str| -> String {
             conn.query_row("SELECT value FROM ItemTable WHERE key=?1", [key], |row| row.get(0)).unwrap()
         };
@@ -1592,16 +1593,19 @@ mod tests {
         assert_eq!(read(&conn, "userInfo"), "old-info");
         assert_eq!(read(&conn, "userPlan"), "old-plan");
         assert_eq!(read(&conn, "creditUsage"), "old-credit");
+        assert_eq!(read(&conn, "enterpriseUsage"), "old-enterprise");
         conn.execute_batch("DROP TRIGGER reject_plan").unwrap();
         let error = write_qoder_secret_batch(&mut conn, &values, |tx| {
             assert_eq!(read(tx, "userInfo"), "new-info");
             assert_eq!(read(tx, "creditUsage"), "new-credit");
+            assert_eq!(read(tx, "enterpriseUsage"), "new-enterprise");
             Err("fixture verification failure".into())
         }).unwrap_err();
         assert!(error.contains("verification failure"));
         assert_eq!(read(&conn, "userInfo"), "old-info");
         assert_eq!(read(&conn, "userPlan"), "old-plan");
         assert_eq!(read(&conn, "creditUsage"), "old-credit");
+        assert_eq!(read(&conn, "enterpriseUsage"), "old-enterprise");
         write_qoder_secret_batch(&mut conn, &values, |tx| {
             for (key, value) in &values { assert_eq!(&read(tx, key), value); }
             Ok(())

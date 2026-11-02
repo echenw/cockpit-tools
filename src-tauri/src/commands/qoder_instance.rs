@@ -288,6 +288,18 @@ pub async fn qoder_start_instance(
     variant_key: Option<String>,
     instance_id: String,
 ) -> Result<InstanceProfileView, String> {
+    let runtime = tokio::runtime::Handle::current();
+    tauri::async_runtime::spawn_blocking(move || {
+        runtime.block_on(start_qoder_instance_inner(variant_key, instance_id))
+    })
+    .await
+    .map_err(|error| format!("QODER_START_WORKER_FAILED: {error}"))?
+}
+
+async fn start_qoder_instance_inner(
+    variant_key: Option<String>,
+    instance_id: String,
+) -> Result<InstanceProfileView, String> {
     let kind = parse_variant(variant_key)?;
     let session_lock = modules::qoder_oauth::client_session_lock(kind)?;
     let _session_guard = session_lock.lock().await;

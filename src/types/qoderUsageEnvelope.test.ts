@@ -25,3 +25,14 @@ test('old flat quota snapshots remain readable', () => {
   assert.equal(resolveQoderCreditUsage({ ...base, auth_credit_usage_raw: raw }), raw);
   assert.equal(getQoderSubscriptionInfo({ ...base, auth_credit_usage_raw: raw }).userQuota.percentage, 20);
 });
+
+test('redacted enterprise IPC metadata still suppresses stale personal quota', () => {
+  const account: QoderAccount = {
+    ...base,
+    auth_user_plan_raw: { userQuota: { used: 75, total: 100 } },
+    auth_credit_usage_raw: { displayMode: 'enterprise' },
+  };
+  const info = getQoderSubscriptionInfo(account);
+  assert.deepEqual(info.userQuota, { used: null, total: null, remaining: null, percentage: null });
+  assert.equal(info.totalUsagePercentage, null);
+});
